@@ -62,6 +62,7 @@ impl<T: Read> Deserialize<T> for Response {
 }
 
 /// Work for a client request.
+#[derive(Clone, Copy)]
 pub enum Work {
     /// Do nothing.
     Constant,
