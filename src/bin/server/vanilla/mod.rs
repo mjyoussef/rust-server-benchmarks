@@ -1,10 +1,8 @@
-use std::net::{TcpListener, TcpStream};
+use rust_server_benchmarks::get_time;
+use rust_server_benchmarks::protocol::{Deserialize, Request, Response, Serialize};
+use std::net::{SocketAddrV4, TcpListener, TcpStream};
 
-use crate::protocol::{self, Deserialize, Serialize};
-
-use crate::utils::get_time;
-
-fn run(addr: &str) {
+fn run(addr: SocketAddrV4) {
     // Create our listener socket
     let listener = TcpListener::bind(addr).unwrap();
 
@@ -16,12 +14,12 @@ fn run(addr: &str) {
 
 fn handle_client(mut stream: TcpStream) {
     // Deserialize and handle the request
-    let request = protocol::Request::deserialize(&mut stream);
+    let request = Request::deserialize(&mut stream);
     request.work.do_work();
 
     // Serialize and send the response
-    let response = protocol::Response {
-        send_time: get_time(),
+    let response = Response {
+        client_send_time: get_time(),
     };
     response.serialize(&mut stream);
 }

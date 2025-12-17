@@ -4,6 +4,13 @@ use std::{
     time::Duration,
 };
 
+use crate::get_time;
+
+pub struct LatencyRecord {
+    pub send_time: u64,
+    pub recv_time: u64,
+}
+
 pub trait Serialize<T: Write> {
     fn serialize(self, bytes: &mut T);
 }
@@ -41,13 +48,24 @@ impl<T: Read> Deserialize<T> for Request {
 
 /// Represents a server response.
 pub struct Response {
-    /// The time (in nanoseconds) the response was sent.
-    pub send_time: u64,
+    /// The time (in nanoseconds) the request was sent by the client.
+    pub client_send_time: u64,
+}
+
+impl Response {
+    pub fn to_latency_record(&self) -> LatencyRecord {
+        LatencyRecord {
+            send_time: self.client_send_time,
+            recv_time: get_time(),
+        }
+    }
 }
 
 impl<T: Write> Serialize<T> for Response {
     fn serialize(self, bytes: &mut T) {
-        bytes.write_all(&self.send_time.to_be_bytes()).unwrap();
+        bytes
+            .write_all(&self.client_send_time.to_be_bytes())
+            .unwrap();
     }
 }
 
@@ -56,8 +74,8 @@ impl<T: Read> Deserialize<T> for Response {
         let mut send_time_bytes = [0u8; 8];
         bytes.read_exact(&mut send_time_bytes).unwrap();
 
-        let send_time = u64::from_be_bytes(send_time_bytes);
-        Self { send_time }
+        let client_send_time = u64::from_be_bytes(send_time_bytes);
+        Self { client_send_time }
     }
 }
 
