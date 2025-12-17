@@ -1,6 +1,5 @@
 use std::{
     net::{SocketAddrV4, TcpStream},
-    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -25,9 +24,6 @@ pub struct Config {
 
     /// The number of clients that are concurrently run.
     pub num_clients: usize,
-
-    /// Directory where results are written.
-    pub outdir: PathBuf,
 }
 
 impl Config {
