@@ -1,6 +1,5 @@
 use std::{
     io::{Read, Write},
-    net::TcpStream,
     thread,
     time::Duration,
 };
@@ -16,10 +15,10 @@ pub trait Deserialize<T: Read> {
 /// Represents a client request.
 pub struct Request {
     /// The time (in nanoseconds) the request was sent.
-    send_time: u64,
+    pub send_time: u64,
 
     /// The work to do.
-    work: Work,
+    pub work: Work,
 }
 
 impl<T: Write> Serialize<T> for Request {
@@ -43,7 +42,7 @@ impl<T: Read> Deserialize<T> for Request {
 /// Represents a server response.
 pub struct Response {
     /// The time (in nanoseconds) the response was sent.
-    send_time: u64,
+    pub send_time: u64,
 }
 
 impl<T: Write> Serialize<T> for Response {
@@ -127,21 +126,3 @@ impl<T: Read> Deserialize<T> for Work {
         }
     }
 }
-
-// fn read_msg<De: Deserialize>(stream: &mut TcpStream, buf: &mut Vec<u8>) -> De {
-//     buf.resize(1, 0);
-
-//     // Read the size
-//     stream.read_exact(&mut buf[0..1]).unwrap();
-
-//     // Read the remainder of the message
-//     buf.resize(buf[0] as usize, 0);
-//     stream.read_exact(&mut buf[1..]).unwrap();
-
-//     // Deserialize
-//     De::deserialize(&buf[1..])
-// }
-
-// fn send_msg<Se: Serialize>(stream: &mut TcpStream, msg: Se, buf: &mut Vec<u8>) {
-//     todo!()
-// }
