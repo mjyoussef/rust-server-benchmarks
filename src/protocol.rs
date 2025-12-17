@@ -1,4 +1,12 @@
-use std::{thread, time::Duration};
+use std::{net::TcpStream, thread, time::Duration};
+
+pub trait Serialize {
+    fn serialize(self, bytes: &mut [u8]);
+}
+
+pub trait Deserialize {
+    fn deserialize(bytes: &[u8]) -> Self;
+}
 
 /// Represents a client request.
 pub struct Request {
@@ -9,13 +17,15 @@ pub struct Request {
     work: Work,
 }
 
-impl Request {
-    pub fn serialize(self, bytes: &mut [u8]) {
+impl Serialize for Request {
+    fn serialize(self, bytes: &mut [u8]) {
         bytes[0..8].copy_from_slice(&self.send_time.to_be_bytes());
         self.work.serialize(&mut bytes[8..]);
     }
+}
 
-    pub fn deserialize(bytes: &[u8]) -> Self {
+impl Deserialize for Request {
+    fn deserialize(bytes: &[u8]) -> Self {
         let send_time = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
         let work = Work::deserialize(&bytes[8..]);
         Self { send_time, work }
@@ -28,12 +38,14 @@ pub struct Response {
     send_time: u64,
 }
 
-impl Response {
-    pub fn serialize(self, bytes: &mut [u8]) {
+impl Serialize for Response {
+    fn serialize(self, bytes: &mut [u8]) {
         bytes[0..8].copy_from_slice(&self.send_time.to_be_bytes());
     }
+}
 
-    pub fn deserialize(bytes: &[u8]) -> Self {
+impl Deserialize for Response {
+    fn deserialize(bytes: &[u8]) -> Self {
         let send_time = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
         Self { send_time }
     }
@@ -52,7 +64,19 @@ pub enum Work {
 }
 
 impl Work {
-    pub fn serialize(self, bytes: &mut [u8]) {
+    pub fn do_work(self) {
+        match self {
+            Work::Constant => {}
+            Work::Busy(amt) => for _ in 0..amt {},
+            Work::Sleep(micros) => {
+                thread::sleep(Duration::from_micros(micros));
+            }
+        }
+    }
+}
+
+impl Serialize for Work {
+    fn serialize(self, bytes: &mut [u8]) {
         match self {
             Work::Constant => {
                 bytes[0] = 0;
@@ -67,8 +91,10 @@ impl Work {
             }
         }
     }
+}
 
-    pub fn deserialize(bytes: &[u8]) -> Self {
+impl Deserialize for Work {
+    fn deserialize(bytes: &[u8]) -> Self {
         let id = bytes[0];
         match id {
             0 => Work::Constant,
@@ -85,14 +111,12 @@ impl Work {
             }
         }
     }
+}
 
-    pub fn do_Work(self) {
-        match self {
-            Work::Constant => {}
-            Work::Busy(amt) => for _ in 0..amt {},
-            Work::Sleep(micros) => {
-                thread::sleep(Duration::from_micros(micros));
-            }
-        }
-    }
+fn read_msg<De: Deserialize>(stream: TcpStream, buf: &mut Vec<u8>) -> De {
+    todo!()
+}
+
+fn send_msg<Se: Serialize>(stream: TcpStream, msg: Se, buf: &mut Vec<u8>) {
+    todo!()
 }

@@ -1,6 +1,6 @@
 mod epoll;
 mod io_uring;
-mod lib;
+mod protocol;
 mod threads;
 mod vanilla;
 

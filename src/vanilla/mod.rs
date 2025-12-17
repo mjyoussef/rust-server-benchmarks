@@ -1,6 +1,6 @@
 use std::net::{TcpListener, TcpStream};
 
-use crate::lib;
+use crate::protocol;
 
 fn run(addr: &str) {
     // Create our listener socket
