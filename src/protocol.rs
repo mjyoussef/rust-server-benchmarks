@@ -13,11 +13,11 @@ pub struct LatencyRecord {
     pub recv_time: u64,
 }
 
-pub trait Serialize<T: Write> {
+pub trait Serialize<T> {
     fn serialize(self, bytes: &mut T) -> Result<()>;
 }
 
-pub trait Deserialize<T: Read> {
+pub trait Deserialize<T> {
     fn deserialize(bytes: &mut T) -> Result<Self>
     where
         Self: Sized;

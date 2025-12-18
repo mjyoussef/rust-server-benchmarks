@@ -4,6 +4,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    thread::JoinHandle,
     time::{Duration, Instant},
 };
 
@@ -24,34 +25,54 @@ pub struct Config {
 
     /// The work the server must do for the client.
     pub work: Work,
+
+    /// The number of clients that are concurrently run.
+    pub num_clients: usize,
 }
 
 impl Config {
-    /// Runs the closed loop request generator and returns the number of requests sent
-    /// and the latency records.
     pub fn run(self) -> (usize, Vec<LatencyRecord>) {
         let cfg = Arc::new(self);
 
-        let stream = TcpStream::connect(cfg.addr).unwrap();
+        (0..cfg.num_clients)
+            .map(|_| {
+                let cfg_clone = cfg.clone();
+                cfg_clone._run_client()
+            })
+            .fold(
+                (0, Vec::new()),
+                |(mut acc_n_reqs, mut acc_lrs), (n_reqs, lrs)| {
+                    let n_reqs = n_reqs.join().unwrap();
+                    let mut lrs = lrs.join().unwrap();
+
+                    acc_n_reqs += n_reqs;
+                    acc_lrs.append(&mut lrs);
+
+                    (acc_n_reqs, acc_lrs)
+                },
+            )
+    }
+
+    /// Runs a single client of closed loop request generator. It returns the number of requests
+    /// sent and the latency records received.
+    fn _run_client(self: Arc<Self>) -> (JoinHandle<usize>, JoinHandle<Vec<LatencyRecord>>) {
+        let stream = TcpStream::connect(self.addr).unwrap();
         stream.set_nodelay(true).unwrap();
 
         let done = Arc::new(AtomicBool::new(false));
 
+        // Start the receiver (note: it is important to start the receiver first since spawning a
+        // thread has substantial overhead and this can skew the latencies.
+        let cfg_clone = self.clone();
+        let stream_clone = stream.try_clone().unwrap();
+        let done_clone = done.clone();
+        let receiver =
+            std::thread::spawn(move || cfg_clone._run_receiver(stream_clone, done_clone));
+
         // Start the sender
-        let sender = {
-            let cfg_clone = cfg.clone();
+        let sender = std::thread::spawn(move || self._run_sender(stream, done));
 
-            let stream_clone = stream.try_clone().unwrap();
-
-            let done_clone = done.clone();
-
-            std::thread::spawn(move || cfg_clone._run_sender(stream_clone, done_clone))
-        };
-
-        // Star the receiver
-        let receiver = std::thread::spawn(move || cfg._run_receiver(stream, done));
-
-        (sender.join().unwrap(), receiver.join().unwrap())
+        (sender, receiver)
     }
 
     /// Sends requests to the server.
@@ -61,8 +82,15 @@ impl Config {
 
         let mut requests_sent = 0;
 
-        while client_start.elapsed() < self.runtime {
+        loop {
             let start = Instant::now();
+
+            // We have to make sure there is an outstanding request before `done` is
+            // true to avoid deadlocking the receiver when the last request has been sent.
+            let is_last = client_start.elapsed() >= self.runtime;
+            if is_last {
+                done.store(true, Ordering::SeqCst);
+            }
 
             // Serialize and send request
             let req = Request {
@@ -70,6 +98,10 @@ impl Config {
                 work: self.work,
             };
             req.serialize(&mut stream).unwrap();
+
+            if is_last {
+                return requests_sent;
+            }
 
             requests_sent += 1;
 
@@ -85,22 +117,18 @@ impl Config {
                 std::hint::spin_loop();
             }
         }
-
-        done.store(true, Ordering::SeqCst);
-
-        requests_sent
     }
 
     /// Receives responses from the server.
     fn _run_receiver(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> Vec<LatencyRecord> {
-        let mut latency_records = Vec::new();
+        let mut lrs = Vec::new();
 
         while !done.load(Ordering::SeqCst) {
-            let res = Response::deserialize(&mut stream).unwrap();
-            let latency_record = res.to_latency_record();
-            latency_records.push(latency_record);
+            let response = Response::deserialize(&mut stream).unwrap();
+            let lr = response.to_latency_record();
+            lrs.push(lr);
         }
 
-        latency_records
+        lrs
     }
 }

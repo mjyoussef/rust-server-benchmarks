@@ -24,17 +24,9 @@ pub fn get_time() -> u64 {
 /// * `lrs` - The latency records.
 /// * `n` - Number of requests sent (this should match `lrs.len()` for a closed
 ///    loop request generator).
-/// * `delay` - The delay in microseconds (this should be `None` for a closed
-///    loop request generator).
 /// * `runtime` - Total runtime in microseconds.
 /// * `path` - The destination file path.
-pub fn write_stats(
-    lrs: Vec<LatencyRecord>,
-    n: usize,
-    delay: Option<u64>,
-    runtime: u64,
-    path: &PathBuf,
-) -> Result<()> {
+pub fn write_stats(lrs: Vec<LatencyRecord>, n: usize, runtime: u64, path: &PathBuf) -> Result<()> {
     // Calculate the 50, 95, and 99th percentile latencies
     let mut latencies: Vec<_> = lrs.iter().map(|lr| lr.recv_time - lr.send_time).collect();
 
@@ -44,10 +36,6 @@ pub fn write_stats(
     let p_99 = latencies[(latencies.len() as f64 * 0.99 as f64) as usize] as f64 / 1000.0;
 
     // Calculate the attempted, offered, and achieved throughput
-    let attempted = match delay {
-        Some(delay) => (1000000.0 / (delay as f64)).to_string(),
-        None => String::from("IGNORE"),
-    };
     let offered = n as u64 / runtime;
     let achieved = latencies.len() as u64 / runtime;
 
@@ -55,7 +43,7 @@ pub fn write_stats(
     let mut file = File::create(path).unwrap();
 
     writeln!(file, "{p_50}, {p_95}, {p_99}")?;
-    writeln!(file, "{attempted}, {offered}, {achieved}")?;
+    writeln!(file, "{offered}, {achieved}")?;
 
     Ok(())
 }

@@ -34,10 +34,9 @@ struct Args {
     #[arg(long, default_value_t = 8080)]
     port: u16,
 
-    /// The number of clients. This argument is ignored if using
-    /// the open loop request generator.
+    /// The number of clients.
     #[arg(long, default_value_t = 1)]
-    num_clients: u16,
+    num_clients: usize,
 
     /// Directory to write results to
     #[arg(short, long)]
@@ -67,13 +66,13 @@ fn main() {
                 addr,
                 runtime,
                 work: args.work,
-                num_clients: 1,
+                num_clients: args.num_clients,
             };
             let lrs = cfg.run();
             let n_reqs = lrs.len();
             let path = dir.join("closed/stats.txt");
             println!("{:?}", path);
-            write_stats(lrs, n_reqs, None, args.runtime, &path).unwrap();
+            write_stats(lrs, n_reqs, args.runtime, &path).unwrap();
         }
         Kind::Open => {
             let cfg = open_loop::Config {
@@ -81,10 +80,11 @@ fn main() {
                 runtime,
                 delay,
                 work: args.work,
+                num_clients: args.num_clients,
             };
             let (n_reqs, lrs) = cfg.run();
             let path = dir.join("open/stats.txt");
-            write_stats(lrs, n_reqs, Some(args.delay), args.runtime, &path).unwrap();
+            write_stats(lrs, n_reqs, args.runtime, &path).unwrap();
         }
     };
 }
