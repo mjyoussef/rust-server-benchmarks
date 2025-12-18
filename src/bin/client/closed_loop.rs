@@ -53,6 +53,7 @@ impl Config {
 
         // Connect to the server
         let mut stream = TcpStream::connect(self.addr).unwrap();
+        stream.set_nodelay(true).unwrap();
 
         let mut latency_records = Vec::new();
 

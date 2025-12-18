@@ -33,13 +33,18 @@ impl Config {
         let cfg = Arc::new(self);
 
         let stream = TcpStream::connect(cfg.addr).unwrap();
+        stream.set_nodelay(true).unwrap();
+
         let done = Arc::new(AtomicBool::new(false));
 
         // Start the sender
         let sender = {
             let cfg_clone = cfg.clone();
+
             let stream_clone = stream.try_clone().unwrap();
+
             let done_clone = done.clone();
+
             std::thread::spawn(move || cfg_clone._run_sender(stream_clone, done_clone))
         };
 

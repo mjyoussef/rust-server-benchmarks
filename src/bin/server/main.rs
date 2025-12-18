@@ -7,7 +7,7 @@ use clap::{Parser, ValueEnum};
 
 mod epoll;
 mod io_uring;
-mod threads;
+mod threadpool;
 mod vanilla;
 
 #[derive(Parser, Debug)]
@@ -55,6 +55,7 @@ fn main() {
         }
         Kind::Vanilla => {
             vanilla::run(addr);
+            println!("done!");
         }
     });
 

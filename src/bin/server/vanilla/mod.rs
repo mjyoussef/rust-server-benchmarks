@@ -8,19 +8,23 @@ pub fn run(addr: SocketAddrV4) {
     println!("Server listening at {}", addr);
 
     // Accept connections
-    for conn in listener.incoming() {
-        _handle_client(conn.unwrap());
+    for stream in listener.incoming() {
+        std::thread::spawn(move || _handle_client(stream.unwrap()));
     }
 }
 
 fn _handle_client(mut stream: TcpStream) {
-    // Deserialize and handle the request
-    let request = Request::deserialize(&mut stream);
-    request.work.do_work();
+    stream.set_nodelay(true).unwrap();
 
-    // Serialize and send the response
-    let response = Response {
-        client_send_time: get_time(),
-    };
-    response.serialize(&mut stream);
+    loop {
+        // Deserialize and handle the request
+        let request = Request::deserialize(&mut stream);
+        request.work.do_work();
+
+        // Serialize and send the response
+        let response = Response {
+            client_send_time: get_time(),
+        };
+        response.serialize(&mut stream);
+    }
 }
