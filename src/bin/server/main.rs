@@ -55,7 +55,6 @@ fn main() {
         }
         Kind::Vanilla => {
             vanilla::run(addr);
-            println!("done!");
         }
     });
 

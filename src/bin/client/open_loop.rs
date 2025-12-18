@@ -69,7 +69,7 @@ impl Config {
                 send_time: get_time(),
                 work: self.work,
             };
-            req.serialize(&mut stream);
+            req.serialize(&mut stream).unwrap();
 
             requests_sent += 1;
 
@@ -96,7 +96,7 @@ impl Config {
         let mut latency_records = Vec::new();
 
         while !done.load(Ordering::SeqCst) {
-            let res = Response::deserialize(&mut stream);
+            let res = Response::deserialize(&mut stream).unwrap();
             let latency_record = res.to_latency_record();
             latency_records.push(latency_record);
         }

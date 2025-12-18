@@ -16,9 +16,6 @@ pub struct Config {
     /// The duration of time for which each client runs.
     pub runtime: Duration,
 
-    /// The delay between when a client receives a response and sends the next request.
-    pub delay: Duration,
-
     /// The work the server must do for the client.
     pub work: Work,
 
@@ -49,7 +46,6 @@ impl Config {
     /// Runs an individual client.
     fn _run_client(&self) -> Vec<LatencyRecord> {
         let client_start = Instant::now();
-        let mut excess_duration = Duration::from_micros(0);
 
         // Connect to the server
         let mut stream = TcpStream::connect(self.addr).unwrap();
@@ -58,31 +54,17 @@ impl Config {
         let mut latency_records = Vec::new();
 
         while client_start.elapsed() < self.runtime {
-            let start = Instant::now();
-
             // Serialize and send request
             let req = Request {
                 send_time: get_time(),
                 work: self.work,
             };
-            req.serialize(&mut stream);
+            req.serialize(&mut stream).unwrap();
 
             // Wait for the response and update our latency records
-            let res = Response::deserialize(&mut stream);
+            let res = Response::deserialize(&mut stream).unwrap();
             let lr = res.to_latency_record();
             latency_records.push(lr);
-
-            // Factor in the excess time
-            excess_duration += start.elapsed();
-            let excess_delay = excess_duration.min(self.delay);
-            let busy_wait_time = self.delay - excess_delay;
-            excess_duration -= excess_delay;
-
-            // Busy loop
-            let busy_loop_start = Instant::now();
-            while busy_loop_start.elapsed() < busy_wait_time {
-                std::hint::spin_loop();
-            }
         }
 
         latency_records

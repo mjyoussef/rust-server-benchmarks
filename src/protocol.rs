@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Write},
+    io::{Error, ErrorKind, Read, Result, Write},
     thread,
     time::Duration,
 };
@@ -14,11 +14,13 @@ pub struct LatencyRecord {
 }
 
 pub trait Serialize<T: Write> {
-    fn serialize(self, bytes: &mut T);
+    fn serialize(self, bytes: &mut T) -> Result<()>;
 }
 
 pub trait Deserialize<T: Read> {
-    fn deserialize(bytes: &mut T) -> Self;
+    fn deserialize(bytes: &mut T) -> Result<Self>
+    where
+        Self: Sized;
 }
 
 /// Represents a client request.
@@ -31,20 +33,21 @@ pub struct Request {
 }
 
 impl<T: Write> Serialize<T> for Request {
-    fn serialize(self, bytes: &mut T) {
-        bytes.write_all(&self.send_time.to_be_bytes()).unwrap();
-        self.work.serialize(bytes);
+    fn serialize(self, bytes: &mut T) -> Result<()> {
+        bytes.write_all(&self.send_time.to_be_bytes())?;
+        self.work.serialize(bytes)?;
+        Ok(())
     }
 }
 
 impl<T: Read> Deserialize<T> for Request {
-    fn deserialize(bytes: &mut T) -> Self {
+    fn deserialize(bytes: &mut T) -> Result<Self> {
         let mut send_time_bytes = [0u8; 8];
-        bytes.read_exact(&mut send_time_bytes).unwrap();
+        bytes.read_exact(&mut send_time_bytes)?;
 
         let send_time = u64::from_be_bytes(send_time_bytes);
-        let work = Work::deserialize(bytes);
-        Self { send_time, work }
+        let work = Work::deserialize(bytes)?;
+        Ok(Self { send_time, work })
     }
 }
 
@@ -64,20 +67,19 @@ impl Response {
 }
 
 impl<T: Write> Serialize<T> for Response {
-    fn serialize(self, bytes: &mut T) {
-        bytes
-            .write_all(&self.client_send_time.to_be_bytes())
-            .unwrap();
+    fn serialize(self, bytes: &mut T) -> Result<()> {
+        bytes.write_all(&self.client_send_time.to_be_bytes())?;
+        Ok(())
     }
 }
 
 impl<T: Read> Deserialize<T> for Response {
-    fn deserialize(bytes: &mut T) -> Self {
+    fn deserialize(bytes: &mut T) -> Result<Self> {
         let mut send_time_bytes = [0u8; 8];
-        bytes.read_exact(&mut send_time_bytes).unwrap();
+        bytes.read_exact(&mut send_time_bytes)?;
 
         let client_send_time = u64::from_be_bytes(send_time_bytes);
-        Self { client_send_time }
+        Ok(Self { client_send_time })
     }
 }
 
@@ -107,47 +109,50 @@ impl Work {
 }
 
 impl<T: Write> Serialize<T> for Work {
-    fn serialize(self, bytes: &mut T) {
+    fn serialize(self, bytes: &mut T) -> Result<()> {
         match self {
             Work::Constant => {
-                bytes.write_all(&[0]).unwrap();
+                bytes.write_all(&[0])?;
             }
             Work::Busy { amt } => {
-                bytes.write_all(&[1]).unwrap();
-                bytes.write_all(&amt.to_be_bytes()).unwrap();
+                bytes.write_all(&[1])?;
+                bytes.write_all(&amt.to_be_bytes())?;
             }
             Work::Sleep { micros } => {
-                bytes.write_all(&[2]).unwrap();
-                bytes.write_all(&micros.to_be_bytes()).unwrap();
+                bytes.write_all(&[2])?;
+                bytes.write_all(&micros.to_be_bytes())?;
             }
         }
+
+        Ok(())
     }
 }
 
 impl<T: Read> Deserialize<T> for Work {
-    fn deserialize(bytes: &mut T) -> Self {
+    fn deserialize(bytes: &mut T) -> Result<Self> {
         let mut id = [0u8; 1];
-        bytes.read_exact(&mut id).unwrap();
+        bytes.read_exact(&mut id)?;
 
         match id[0] {
-            0 => Work::Constant,
+            0 => Ok(Work::Constant),
             1 => {
                 let mut amt_bytes = [0u8; 8];
-                bytes.read_exact(&mut amt_bytes).unwrap();
-                Work::Busy {
+                bytes.read_exact(&mut amt_bytes)?;
+                Ok(Work::Busy {
                     amt: u64::from_be_bytes(amt_bytes),
-                }
+                })
             }
             2 => {
                 let mut micros_bytes = [0u8; 8];
-                bytes.read_exact(&mut micros_bytes).unwrap();
-                Work::Sleep {
+                bytes.read_exact(&mut micros_bytes)?;
+                Ok(Work::Sleep {
                     micros: u64::from_be_bytes(micros_bytes),
-                }
+                })
             }
-            n => {
-                panic!("failed to deserialize work message: {n} is an invalid work id")
-            }
+            n => Err(Error::new(
+                ErrorKind::InvalidData,
+                format!("failed to deserialize work message: {n} is an invalid work id"),
+            )),
         }
     }
 }

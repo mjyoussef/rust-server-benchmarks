@@ -1,5 +1,6 @@
 use rust_server_benchmarks::get_time;
 use rust_server_benchmarks::protocol::{Deserialize, Request, Response, Serialize};
+use std::io::ErrorKind;
 use std::net::{SocketAddrV4, TcpListener, TcpStream};
 
 pub fn run(addr: SocketAddrV4) {
@@ -18,13 +19,26 @@ fn _handle_client(mut stream: TcpStream) {
 
     loop {
         // Deserialize and handle the request
-        let request = Request::deserialize(&mut stream);
-        request.work.do_work();
+        match Request::deserialize(&mut stream) {
+            Ok(request) => {
+                request.work.do_work();
+            }
+            Err(e) => {
+                if e.kind() != ErrorKind::UnexpectedEof {
+                    eprintln!("{e}");
+                }
+
+                break;
+            }
+        }
 
         // Serialize and send the response
         let response = Response {
             client_send_time: get_time(),
         };
-        response.serialize(&mut stream);
+
+        if let Err(e) = response.serialize(&mut stream) {
+            eprintln!("{e}");
+        }
     }
 }

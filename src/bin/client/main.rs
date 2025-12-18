@@ -20,7 +20,8 @@ struct Args {
     #[arg(short, long, default_value_t = 6)]
     runtime: u64,
 
-    /// Delay in microseconds.
+    /// Delay in microseconds. This argument is ignored if using
+    /// the closed loop request generator.
     #[arg(short, long)]
     delay: u64,
 
@@ -59,7 +60,6 @@ fn main() {
             let cfg = closed_loop::Config {
                 addr,
                 runtime,
-                delay,
                 work: args.work,
                 num_clients: 1,
             };
