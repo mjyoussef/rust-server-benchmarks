@@ -4,6 +4,8 @@ use std::{
     time::Duration,
 };
 
+use clap::Subcommand;
+
 use crate::get_time;
 
 pub struct LatencyRecord {
@@ -80,24 +82,24 @@ impl<T: Read> Deserialize<T> for Response {
 }
 
 /// Work for a client request.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Subcommand)]
 pub enum Work {
     /// Do nothing.
     Constant,
 
     /// Loop for a specified number of times.
-    Busy(u64),
+    Busy { amt: u64 },
 
     /// Sleep for a specified number of microseconds.
-    Sleep(u64),
+    Sleep { micros: u64 },
 }
 
 impl Work {
     pub fn do_work(self) {
         match self {
             Work::Constant => {}
-            Work::Busy(amt) => for _ in 0..amt {},
-            Work::Sleep(micros) => {
+            Work::Busy { amt } => for _ in 0..amt {},
+            Work::Sleep { micros } => {
                 thread::sleep(Duration::from_micros(micros));
             }
         }
@@ -110,11 +112,11 @@ impl<T: Write> Serialize<T> for Work {
             Work::Constant => {
                 bytes.write_all(&[0]).unwrap();
             }
-            Work::Busy(amt) => {
+            Work::Busy { amt } => {
                 bytes.write_all(&[1]).unwrap();
                 bytes.write_all(&amt.to_be_bytes()).unwrap();
             }
-            Work::Sleep(micros) => {
+            Work::Sleep { micros } => {
                 bytes.write_all(&[2]).unwrap();
                 bytes.write_all(&micros.to_be_bytes()).unwrap();
             }
@@ -132,12 +134,16 @@ impl<T: Read> Deserialize<T> for Work {
             1 => {
                 let mut amt_bytes = [0u8; 8];
                 bytes.read_exact(&mut amt_bytes).unwrap();
-                Work::Busy(u64::from_be_bytes(amt_bytes))
+                Work::Busy {
+                    amt: u64::from_be_bytes(amt_bytes),
+                }
             }
             2 => {
                 let mut micros_bytes = [0u8; 8];
                 bytes.read_exact(&mut micros_bytes).unwrap();
-                Work::Sleep(u64::from_be_bytes(micros_bytes))
+                Work::Sleep {
+                    micros: u64::from_be_bytes(micros_bytes),
+                }
             }
             n => {
                 panic!("failed to deserialize work message: {n} is an invalid work id")
