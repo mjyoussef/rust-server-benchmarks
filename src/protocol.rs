@@ -59,6 +59,13 @@ pub struct Response {
 
 impl Response {
     pub fn to_latency_record(&self) -> LatencyRecord {
+        let send_time = self.client_send_time;
+        let recv_time = get_time();
+
+        if recv_time < send_time {
+            panic!("error: send/recv times are inconsistent")
+        }
+
         LatencyRecord {
             send_time: self.client_send_time,
             recv_time: get_time(),
