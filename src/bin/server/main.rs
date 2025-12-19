@@ -21,12 +21,16 @@ struct Args {
     timeout: u64,
 
     /// IP address to bind to
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(short, long, default_value = "127.0.0.1")]
     ip: Ipv4Addr,
 
     /// Port to bind to
-    #[arg(long, default_value_t = 8080)]
+    #[arg(short, long, default_value_t = 8080)]
     port: u16,
+
+    /// Threadpool size (ignored for epoll, io_uring servers)
+    #[arg(short, long, default_value_t = 16)]
+    tp_size: usize,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -49,7 +53,7 @@ fn main() {
             todo!("not implemented")
         }
         Kind::ThreadPool => {
-            threadpool::run(addr);
+            threadpool::run(addr, args.tp_size);
         }
     });
 
