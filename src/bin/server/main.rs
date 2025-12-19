@@ -8,7 +8,6 @@ use clap::{Parser, ValueEnum};
 mod epoll;
 mod io_uring;
 mod threadpool;
-mod vanilla;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -34,8 +33,7 @@ struct Args {
 enum Kind {
     Epoll,
     IOUring,
-    Threads,
-    Vanilla,
+    ThreadPool,
 }
 
 fn main() {
@@ -50,11 +48,8 @@ fn main() {
         Kind::IOUring => {
             todo!("not implemented")
         }
-        Kind::Threads => {
-            todo!("not implemented")
-        }
-        Kind::Vanilla => {
-            vanilla::run(addr);
+        Kind::ThreadPool => {
+            threadpool::run(addr);
         }
     });
 

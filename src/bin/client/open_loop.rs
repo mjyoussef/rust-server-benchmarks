@@ -34,23 +34,22 @@ impl Config {
     pub fn run(self) -> (usize, Vec<LatencyRecord>) {
         let cfg = Arc::new(self);
 
-        (0..cfg.num_clients)
+        let handles: Vec<_> = (0..cfg.num_clients)
             .map(|_| {
                 let cfg_clone = cfg.clone();
                 cfg_clone._run_client()
             })
-            .fold(
-                (0, Vec::new()),
-                |(mut acc_n_reqs, mut acc_lrs), (n_reqs, lrs)| {
-                    let n_reqs = n_reqs.join().unwrap();
-                    let mut lrs = lrs.join().unwrap();
+            .collect();
 
-                    acc_n_reqs += n_reqs;
-                    acc_lrs.append(&mut lrs);
+        let mut n_reqs = 0;
+        let mut lrs = Vec::new();
 
-                    (acc_n_reqs, acc_lrs)
-                },
-            )
+        for handle in handles {
+            n_reqs += handle.0.join().unwrap();
+            lrs.append(&mut handle.1.join().unwrap());
+        }
+
+        (n_reqs, lrs)
     }
 
     /// Runs a single client of closed loop request generator. It returns the number of requests
