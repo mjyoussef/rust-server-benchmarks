@@ -1,11 +1,12 @@
 use std::{
-    io,
+    io::{self, Read},
     net::{SocketAddrV4, TcpListener, TcpStream},
 };
 
 use nix::sys::epoll::*;
 
 use crossbeam_channel::{Receiver, unbounded};
+use rust_server_benchmarks::protocol::{Request, Response};
 
 pub fn run(addr: SocketAddrV4, n_threads: usize, capacity: usize, max_events: usize) {
     let listener = TcpListener::bind(addr).unwrap();
@@ -41,6 +42,9 @@ struct Connection {
     /// A reusable buffer for reading from and writing to the client.
     buf: Vec<u8>,
 
+    /// The current index into the buffer for reading or writing.
+    idx: usize,
+
     /// The action being performed on the connection.
     state: ConnState,
 }
@@ -49,9 +53,47 @@ impl Connection {
     fn new(stream: TcpStream) -> Self {
         Self {
             stream: stream,
-            buf: Vec::new(),
+            buf: vec![0u8; 64],
+            idx: 0,
             state: ConnState::Read,
         }
+    }
+
+    fn change(&mut self, stream: TcpStream, state: ConnState) {
+        self.stream = stream;
+        self.reset(state);
+    }
+
+    fn reset(&mut self, state: ConnState) {
+        self.buf.truncate(64);
+        self.idx = 0;
+        self.state = state;
+    }
+
+    fn read_until_block(&mut self) -> io::Result<Request> {
+        loop {
+            match self.stream.read(&mut self.buf[self.idx..]) {
+                Ok(n) => {
+                    self.idx += n;
+
+                    if self.idx >= self.buf.len() {
+                        self.buf.resize(self.buf.len() * 2, 0);
+                    }
+                }
+                Err(e) => match e.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    _ => {
+                        return Err(e);
+                    }
+                },
+            }
+        }
+
+        todo!()
+    }
+
+    fn write_until_block(&mut self) {
+        //
     }
 }
 
@@ -119,16 +161,21 @@ impl EpollThread {
                 let conn_idx = event.data() as usize;
                 let conn = &mut self.conns[conn_idx];
 
-                // If ConnState::Read, keep reading until we hit a WouldBlock, Success, EoF, or error. Once complete,
-                // deserialize the request, do work, serialize the response into `conn.buf` and prepare the
-                // connection for writing and modify the epoll instance. If an EoF or error, then delete the event.
-                // If there is an error, print the error.
-                // TODO
-
-                // If ConnState::Write, keep writing until we hit a WouldBlock, Success, or error. Once complete,
-                // prepare the connection for reading and modify the epoll instance. If there is an error, delete
-                // the event and print the error.
-                // TODO
+                match conn.state {
+                    ConnState::Read => {
+                        // If ConnState::Read, keep reading until we hit a WouldBlock, Success, EoF, or error. Once complete,
+                        // deserialize the request, do work, serialize the response into `conn.buf` and prepare the
+                        // connection for writing and modify the epoll instance. If an EoF or error, then delete the event.
+                        // If there is an error, print the error.
+                        // TODO
+                    }
+                    ConnState::Write => {
+                        // If ConnState::Write, keep writing until we hit a WouldBlock, Success, or error. Once complete,
+                        // prepare the connection for reading and modify the epoll instance. If there is an error, delete
+                        // the event and print the error.
+                        // TODO
+                    }
+                }
             }
         }
     }
@@ -142,8 +189,7 @@ impl EpollThread {
 
         // Prepare the connection
         let conn = &mut self.conns[idx];
-        conn.stream = stream;
-        conn.state = ConnState::Read;
+        conn.change(stream, ConnState::Read);
 
         Ok(())
     }

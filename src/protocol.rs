@@ -8,6 +8,9 @@ use clap::Subcommand;
 
 use crate::get_time;
 
+pub const REQUEST_SIZE: usize = 17;
+pub const RESPONSE_SIZE: usize = 8;
+
 pub struct LatencyRecord {
     pub send_time: u64,
     pub recv_time: u64,
@@ -120,6 +123,7 @@ impl<T: Write> Serialize<T> for Work {
         match self {
             Work::Constant => {
                 bytes.write_all(&[0])?;
+                bytes.write_all(&[0u8; 8])?;
             }
             Work::Busy { amt } => {
                 bytes.write_all(&[1])?;
@@ -141,7 +145,10 @@ impl<T: Read> Deserialize<T> for Work {
         bytes.read_exact(&mut id)?;
 
         match id[0] {
-            0 => Ok(Work::Constant),
+            0 => {
+                bytes.read_exact(&mut [0u8; 8])?;
+                Ok(Work::Constant)
+            }
             1 => {
                 let mut amt_bytes = [0u8; 8];
                 bytes.read_exact(&mut amt_bytes)?;
