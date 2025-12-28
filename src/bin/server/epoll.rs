@@ -1,12 +1,14 @@
 use std::{
-    io::{self, Read},
+    io::{self, Cursor, Read, Write},
     net::{SocketAddrV4, TcpListener, TcpStream},
 };
 
 use nix::sys::epoll::*;
 
 use crossbeam_channel::{Receiver, unbounded};
-use rust_server_benchmarks::protocol::{Request, Response};
+use rust_server_benchmarks::protocol::{
+    Deserialize, REQUEST_SIZE, RESPONSE_SIZE, Request, Response, Serialize,
+};
 
 pub fn run(addr: SocketAddrV4, n_threads: usize, capacity: usize, max_events: usize) {
     let listener = TcpListener::bind(addr).unwrap();
@@ -40,7 +42,7 @@ struct Connection {
     stream: TcpStream,
 
     /// A reusable buffer for reading from and writing to the client.
-    buf: Vec<u8>,
+    buf: Cursor<Vec<u8>>,
 
     /// The current index into the buffer for reading or writing.
     idx: usize,
@@ -53,7 +55,7 @@ impl Connection {
     fn new(stream: TcpStream) -> Self {
         Self {
             stream: stream,
-            buf: vec![0u8; 64],
+            buf: Cursor::new(vec![0u8; REQUEST_SIZE]),
             idx: 0,
             state: ConnState::Read,
         }
@@ -65,19 +67,37 @@ impl Connection {
     }
 
     fn reset(&mut self, state: ConnState) {
-        self.buf.truncate(64);
+        match state {
+            ConnState::Read => {
+                self.buf.get_mut().truncate(REQUEST_SIZE);
+            }
+            ConnState::Write => {
+                self.buf.get_mut().truncate(RESPONSE_SIZE);
+            }
+        }
+        self.buf.set_position(0);
         self.idx = 0;
         self.state = state;
     }
 
-    fn read_until_block(&mut self) -> io::Result<Request> {
+    fn copy_until_block(&mut self) -> io::Result<()> {
+        let size = match self.state {
+            ConnState::Read => REQUEST_SIZE,
+            _ => RESPONSE_SIZE,
+        };
+
         loop {
-            match self.stream.read(&mut self.buf[self.idx..]) {
+            let result = match self.state {
+                ConnState::Read => self.stream.read(&mut self.buf.get_mut()[self.idx..]),
+                _ => self.stream.write(&mut self.buf.get_mut()[self.idx..]),
+            };
+
+            match result {
                 Ok(n) => {
                     self.idx += n;
 
-                    if self.idx >= self.buf.len() {
-                        self.buf.resize(self.buf.len() * 2, 0);
+                    if self.idx == size {
+                        break;
                     }
                 }
                 Err(e) => match e.kind() {
@@ -89,11 +109,15 @@ impl Connection {
             }
         }
 
-        todo!()
+        Ok(())
     }
 
-    fn write_until_block(&mut self) {
-        //
+    fn deserialize_request(&mut self) -> io::Result<Request> {
+        Request::deserialize(&mut self.buf)
+    }
+
+    fn serialize_response(&mut self, response: Response) -> io::Result<()> {
+        response.serialize(&mut self.buf)
     }
 }
 
