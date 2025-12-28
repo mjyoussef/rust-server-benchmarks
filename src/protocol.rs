@@ -54,6 +54,15 @@ impl<T: Read> Deserialize<T> for Request {
     }
 }
 
+impl Request {
+    pub fn do_work(self) -> Response {
+        self.work.do_work();
+        Response {
+            client_send_time: self.send_time,
+        }
+    }
+}
+
 /// Represents a server response.
 pub struct Response {
     /// The time (in nanoseconds) the request was sent by the client.

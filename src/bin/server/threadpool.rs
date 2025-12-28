@@ -1,5 +1,4 @@
 use crossbeam_channel::{SendError, Sender};
-use rust_server_benchmarks::get_time;
 use rust_server_benchmarks::protocol::{Deserialize, Request, Response, Serialize};
 use std::io::ErrorKind;
 use std::net::{SocketAddrV4, TcpListener, TcpStream};
@@ -24,10 +23,8 @@ fn _handle_client(mut stream: TcpStream) {
 
     loop {
         // Deserialize and handle the request
-        match Request::deserialize(&mut stream) {
-            Ok(request) => {
-                request.work.do_work();
-            }
+        let response = match Request::deserialize(&mut stream) {
+            Ok(request) => request.do_work(),
             Err(e) => {
                 if e.kind() != ErrorKind::UnexpectedEof {
                     eprintln!("{e}");
@@ -35,13 +32,9 @@ fn _handle_client(mut stream: TcpStream) {
 
                 break;
             }
-        }
-
-        // Serialize and send the response
-        let response = Response {
-            client_send_time: get_time(),
         };
 
+        // Serialize and send the response
         if let Err(e) = response.serialize(&mut stream) {
             eprintln!("{e}");
         }
