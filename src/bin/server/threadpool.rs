@@ -1,5 +1,5 @@
 use crossbeam_channel::{SendError, Sender};
-use rust_server_benchmarks::protocol::{Deserialize, Request, Response, Serialize};
+use rust_server_benchmarks::protocol::{Deserialize, Request, Serialize};
 use std::io::ErrorKind;
 use std::net::{SocketAddrV4, TcpListener, TcpStream};
 

@@ -135,10 +135,17 @@ impl Connection {
 }
 
 struct Epoll {
+    /// The Epoll file descriptor.
     epoll_fd: epoll::Epoll,
+
+    /// Maximum number of concurrent connections allowed.
     capacity: usize,
+
+    /// The connections.
     conns: Vec<Connection>,
-    id_pool: Vec<usize>,
+
+    /// Buffer of connections that are available to use.
+    free_conns: Vec<usize>,
 }
 
 impl Epoll {
@@ -148,20 +155,20 @@ impl Epoll {
         let conns = (0..capacity)
             .map(|_| Connection::new(None))
             .collect::<Vec<_>>();
-        let id_pool = (0..capacity).collect::<Vec<_>>();
+        let free_conns = (0..capacity).collect::<Vec<_>>();
 
         Self {
             epoll_fd,
             capacity,
             conns,
-            id_pool,
+            free_conns,
         }
     }
 
-    /// Adds a connection and returns it's id.
+    /// Adds a connection.
     fn add(&mut self, stream: TcpStream) -> io::Result<()> {
         let id = self
-            .id_pool
+            .free_conns
             .pop()
             .expect("cannot add a connection while connection pool is full.");
 
@@ -183,7 +190,7 @@ impl Epoll {
         self.epoll_fd.delete(stream)?;
 
         conn.reset(Action::Read);
-        self.id_pool.push(id);
+        self.free_conns.push(id);
 
         Ok(())
     }
@@ -222,20 +229,20 @@ impl Epoll {
 
     /// Returns `true` if there are no connections in use.
     fn is_empty(&self) -> bool {
-        self.id_pool.len() == self.capacity
+        self.free_conns.len() == self.capacity
     }
 
     /// Returns `true` if the connection pool is at capacity.
     fn is_full(&self) -> bool {
-        self.id_pool.is_empty()
+        self.free_conns.is_empty()
     }
 }
 
 struct EpollThread {
-    /// The Epoll fd.
+    /// The thread's `Epoll` instance.
     epoll: Epoll,
 
-    /// Reusable buffer of epoll events.
+    /// Reusable buffer of Epoll events.
     events: Vec<epoll::EpollEvent>,
 
     /// The receiving side of a channel of connections.
@@ -243,7 +250,7 @@ struct EpollThread {
 }
 
 impl EpollThread {
-    /// Creates a new epoll thread.
+    /// Creates a new `EpollThread`.
     ///
     /// # [Arguments]
     ///
