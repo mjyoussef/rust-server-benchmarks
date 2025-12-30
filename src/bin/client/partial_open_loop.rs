@@ -41,8 +41,12 @@ impl Config {
         let start = Instant::now();
         let mut excess_duration = Duration::from_micros(0);
 
+        // Notifications for the threads run
         let (tx, rx) = unbounded();
+
+        // Number of idle threads
         let ready = Arc::new(AtomicU64::new(0));
+
         let mut handles: Vec<JoinHandle<Vec<LatencyRecord>>> = Vec::new();
 
         while start.elapsed() < self.runtime {
@@ -63,6 +67,10 @@ impl Config {
             }
         }
 
+        // Drop the sender so that receivers will exit out of the receive loop.
+        // Otherwise, we'll deadlock.
+        drop(tx);
+
         handles
             .into_iter()
             .flat_map(|v| v.join().unwrap())
@@ -76,6 +84,7 @@ impl Config {
         ready: &Arc<AtomicU64>,
         handles: &mut Vec<JoinHandle<Vec<LatencyRecord>>>,
     ) {
+        // If all threads are busy and we haven't reached the threadpool capacity, spawn another thread.
         if ready.load(Ordering::SeqCst) == 0 && handles.len() < self.max_threads {
             let rx = rx.clone();
             let ready = ready.clone();
@@ -104,6 +113,7 @@ impl Config {
             handles.push(handle);
         }
 
+        // Either way, send a notification.
         tx.send(()).unwrap();
     }
 }
