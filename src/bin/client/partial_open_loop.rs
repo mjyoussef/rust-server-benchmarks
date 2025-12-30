@@ -89,11 +89,11 @@ impl Config {
             let rx = rx.clone();
             let ready = ready.clone();
             let handle = std::thread::spawn(move || {
-                let mut stream = TcpStream::connect(self.addr).unwrap();
                 let mut lrs = Vec::new();
 
                 for _ in rx {
                     ready.fetch_sub(1, Ordering::SeqCst);
+                    let mut stream = TcpStream::connect(self.addr).unwrap();
                     for _ in 0..self.num_requests {
                         let req = Request {
                             send_time: get_time(),
