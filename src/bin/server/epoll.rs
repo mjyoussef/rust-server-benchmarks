@@ -42,6 +42,8 @@ struct Connection {
     stream: Option<TcpStream>,
 
     /// A reusable buffer for reading from and writing to the client.
+    /// This is wrapped in a `Cursor` so that `buf` implements the `io::{Read, Write}`
+    /// traits, which are neccessary for the serialization/deserialization logic.
     buf: Cursor<Vec<u8>>,
 
     /// The current index into the buffer for reading or writing.
@@ -82,11 +84,12 @@ impl Connection {
         };
 
         self.buf.get_mut().resize(new_buf_length, 0);
-        self.buf.set_position(0);
         self.idx = 0;
         self.action = state;
     }
 
+    /// Copies bytes from the stream into the buffer or vice-versa (depending on the action
+    /// being performed for the connection).
     fn copy_until_blocked(&mut self) -> io::Result<()> {
         let stream = self
             .stream
@@ -104,6 +107,7 @@ impl Connection {
             match result {
                 Ok(0) => match self.action {
                     Action::Write => {
+                        // This is problematic because we should've gotten a `WouldBlock` error.
                         return Err(io::Error::new(
                             io::ErrorKind::WriteZero,
                             "unexpectedly wrote zero bytes",
@@ -133,10 +137,12 @@ impl Connection {
     }
 
     fn deserialize_request(&mut self) -> io::Result<Request> {
+        self.buf.set_position(0);
         Request::deserialize(&mut self.buf)
     }
 
     fn serialize_response(&mut self, response: Response) -> io::Result<()> {
+        self.buf.set_position(0);
         response.serialize(&mut self.buf)
     }
 }
@@ -311,11 +317,12 @@ impl EpollThread {
                             continue;
                         }
 
-                        if e.kind() != io::ErrorKind::UnexpectedEof {
+                        if e.kind() == io::ErrorKind::UnexpectedEof {
+                            self.epoll.delete(id).unwrap();
+                        } else {
                             eprintln!("unexpected error: {e}");
+                            // TODO: it might be a good idea to drop the connection.
                         }
-
-                        self.epoll.delete(id).unwrap();
                     }
                     _ => match conn.action {
                         Action::Read => {
