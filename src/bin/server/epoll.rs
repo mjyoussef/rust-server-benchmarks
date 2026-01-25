@@ -61,32 +61,39 @@ impl Connection {
         }
     }
 
+    /// Initializes the stream for the connection.
     fn init(&mut self, stream: TcpStream) {
         self.stream = Some(stream);
     }
 
-    fn reset(&mut self, state: Action) {
-        match state {
-            Action::Read => {
-                self.buf.get_mut().resize(REQUEST_SIZE, 0);
-            }
-            Action::Write => {
-                self.buf.get_mut().resize(RESPONSE_SIZE, 0);
-            }
-        }
-        self.stream = None; // drop the connection
+    /// Drops the connection and prepares a new one for reading.
+    fn reset(&mut self) {
+        self.reinitialize(Action::Read);
+
+        // Drop the connection
+        self.stream = None;
+    }
+
+    /// Reinitializes a connection for a new action.
+    fn reinitialize(&mut self, state: Action) {
+        let new_buf_length = match state {
+            Action::Read => REQUEST_SIZE,
+            Action::Write => RESPONSE_SIZE,
+        };
+
+        self.buf.get_mut().resize(new_buf_length, 0);
         self.buf.set_position(0);
         self.idx = 0;
         self.action = state;
     }
 
     fn copy_until_blocked(&mut self) -> io::Result<()> {
-        let stream = self.stream.as_mut().unwrap();
+        let stream = self
+            .stream
+            .as_mut()
+            .expect("cannot read/write from a stream that's uninitialized");
 
-        let size = match self.action {
-            Action::Read => REQUEST_SIZE,
-            _ => RESPONSE_SIZE,
-        };
+        let size = self.buf.get_ref().len();
 
         loop {
             let result = match self.action {
@@ -138,18 +145,18 @@ struct Epoll {
     /// The Epoll file descriptor.
     epoll_fd: epoll::Epoll,
 
-    /// Maximum number of concurrent connections allowed.
+    /// Maximum number of concurrent connections the epoll thread can handle.
     capacity: usize,
 
-    /// The connections.
+    /// The pool of connection buffers.
     conns: Vec<Connection>,
 
-    /// Buffer of connections that are available to use.
+    /// Indices of connections that may be used.
     free_conns: Vec<usize>,
 }
 
 impl Epoll {
-    /// Creates a new Epoll instance.
+    /// Creates a new `Epoll` instance.
     fn new(capacity: usize) -> Self {
         let epoll_fd = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
         let conns = (0..capacity)
@@ -182,19 +189,21 @@ impl Epoll {
         Ok(())
     }
 
-    /// Deletes a connection by id.
+    /// Deletes a connection.
     fn delete(&mut self, id: usize) -> io::Result<()> {
         let conn = &mut self.conns[id];
         let stream = conn.stream.as_ref().expect("connection not in use.");
 
+        // Remove the stream from the epoll fd's interest list.
         self.epoll_fd.delete(stream)?;
 
-        conn.reset(Action::Read);
+        conn.reset();
         self.free_conns.push(id);
 
         Ok(())
     }
 
+    /// Modifies the connection for a new action.
     fn modify(&mut self, id: usize, state: Action) -> io::Result<()> {
         let conn = &mut self.conns[id];
         let stream = conn.stream.as_ref().expect("connection not in use.");
@@ -207,7 +216,7 @@ impl Epoll {
         let mut event = epoll::EpollEvent::new(event_flags, id as u64);
         self.epoll_fd.modify(stream, &mut event)?;
 
-        conn.reset(state);
+        conn.reinitialize(state);
 
         Ok(())
     }
@@ -232,7 +241,7 @@ impl Epoll {
         self.free_conns.len() == self.capacity
     }
 
-    /// Returns `true` if the connection pool is at capacity.
+    /// Returns `true` if the connection pool is at full capacity.
     fn is_full(&self) -> bool {
         self.free_conns.is_empty()
     }
@@ -242,7 +251,7 @@ struct EpollThread {
     /// The thread's `Epoll` instance.
     epoll: Epoll,
 
-    /// Reusable buffer of Epoll events.
+    /// Buffer of Epoll events used when calling `self.epoll.wait`.
     events: Vec<epoll::EpollEvent>,
 
     /// The receiving side of a channel of connections.
@@ -267,9 +276,10 @@ impl EpollThread {
         }
     }
 
+    /// Runs the event loop.
     fn run(mut self) {
         loop {
-            // We must have at least one connection
+            // We must have at least one connection. If not, we'll block until we receive a connection.
             if self.epoll.is_empty() {
                 let stream = self.rx_conn.recv().unwrap();
                 self.epoll.add(stream).unwrap();
