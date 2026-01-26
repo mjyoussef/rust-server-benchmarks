@@ -2,7 +2,7 @@ use std::{
     net::{SocketAddrV4, TcpStream},
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -13,7 +13,7 @@ use rust_server_benchmarks::{
     protocol::{Deserialize, LatencyRecord, Request, Response, Serialize, Work},
 };
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, unbounded};
 
 #[derive(Copy, Clone)]
 pub struct Config {
@@ -30,10 +30,10 @@ pub struct Config {
     pub work: Work,
 
     /// The maximum number of client threads that can be running concurrently.
-    pub max_threads: usize,
+    pub max_clients: usize,
 
     /// Number of requests each client sends.
-    pub num_requests: usize,
+    pub n_requests: usize,
 }
 
 impl Config {
@@ -41,18 +41,26 @@ impl Config {
         let start = Instant::now();
         let mut excess_duration = Duration::from_micros(0);
 
-        // Notifications for the threads run
+        // Notifications for the threads to run
         let (tx, rx) = unbounded();
 
-        // Number of idle threads
-        let ready = Arc::new(AtomicU64::new(0));
+        // Tracks the number of threads that are ready
+        let ready = Arc::new(AtomicUsize::new(0));
 
-        let mut handles: Vec<JoinHandle<Vec<LatencyRecord>>> = Vec::new();
+        // Notification for threads to stop
+        let done = Arc::new(AtomicBool::new(false));
+
+        let mut handles = Vec::new();
 
         while start.elapsed() < self.runtime {
             let iter_start = Instant::now();
 
-            self._run_client(&tx, &rx, &ready, &mut handles);
+            // Spawn another thread if we haven't hit capacity and no threads are ready
+            if ready.load(Ordering::Acquire) == 0 && handles.len() < self.max_clients {
+                handles.push(self.run_client(&rx, &ready, &done));
+            }
+
+            tx.send(()).unwrap();
 
             // Factor in the excess time
             excess_duration += iter_start.elapsed();
@@ -67,9 +75,11 @@ impl Config {
             }
         }
 
-        // Drop the sender so that receivers will exit out of the receive loop.
-        // Otherwise, we'll deadlock.
+        // Drop the sender so that receivers will only process the remaining notifications.
+        // If there are lots of notifications, it's possible that workers threads may continue
+        // sending requests well after the deadline, so we also need to send a notification.
         drop(tx);
+        done.store(true, Ordering::Release);
 
         handles
             .into_iter()
@@ -77,43 +87,44 @@ impl Config {
             .collect()
     }
 
-    fn _run_client(
+    fn run_client(
         self,
-        tx: &Sender<()>,
         rx: &Receiver<()>,
-        ready: &Arc<AtomicU64>,
-        handles: &mut Vec<JoinHandle<Vec<LatencyRecord>>>,
-    ) {
-        // If all threads are busy and we haven't reached the threadpool capacity, spawn another thread.
-        if ready.load(Ordering::SeqCst) == 0 && handles.len() < self.max_threads {
-            let rx = rx.clone();
-            let ready = ready.clone();
-            let handle = std::thread::spawn(move || {
-                let mut lrs = Vec::new();
+        ready: &Arc<AtomicUsize>,
+        done: &Arc<AtomicBool>,
+    ) -> JoinHandle<Vec<LatencyRecord>> {
+        let rx = rx.clone();
+        let ready = ready.clone();
+        let done = done.clone();
 
-                for _ in rx {
-                    ready.fetch_sub(1, Ordering::SeqCst);
-                    let mut stream = TcpStream::connect(self.addr).unwrap();
-                    for _ in 0..self.num_requests {
-                        let req = Request {
-                            send_time: get_time(),
-                            work: self.work,
-                        };
-                        req.serialize(&mut stream).unwrap();
+        std::thread::spawn(move || {
+            ready.fetch_add(1, Ordering::Release);
+            let mut lrs = Vec::new();
 
-                        let resp = Response::deserialize(&mut stream).unwrap();
-                        lrs.push(resp.to_latency_record());
-                    }
-                    ready.fetch_add(1, Ordering::SeqCst);
+            for _ in rx {
+                ready.fetch_sub(1, Ordering::AcqRel);
+                if done.load(Ordering::Acquire) {
+                    break;
                 }
 
-                lrs
-            });
+                let mut stream = TcpStream::connect(self.addr).unwrap();
+                stream.set_nodelay(true).unwrap();
 
-            handles.push(handle);
-        }
+                for _ in 0..self.n_requests {
+                    let req = Request {
+                        send_time: get_time(),
+                        work: self.work,
+                    };
+                    req.serialize(&mut stream).unwrap();
 
-        // Either way, send a notification.
-        tx.send(()).unwrap();
+                    let resp = Response::deserialize(&mut stream).unwrap();
+                    lrs.push(resp.to_latency_record());
+                }
+
+                ready.fetch_add(1, Ordering::AcqRel);
+            }
+
+            lrs
+        })
     }
 }

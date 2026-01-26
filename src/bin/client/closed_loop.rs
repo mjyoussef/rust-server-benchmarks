@@ -20,7 +20,7 @@ pub struct Config {
     pub work: Work,
 
     /// The number of clients that are concurrently run.
-    pub num_clients: usize,
+    pub n_clients: usize,
 }
 
 impl Config {
@@ -29,10 +29,10 @@ impl Config {
     pub fn run(self) -> Vec<LatencyRecord> {
         let cfg = Arc::new(self);
 
-        let handles = (0..cfg.num_clients)
+        let handles = (0..cfg.n_clients)
             .map(|_| {
                 let cfg_clone = cfg.clone();
-                std::thread::spawn(move || cfg_clone._run_client())
+                std::thread::spawn(move || cfg_clone.run_client())
             })
             .collect::<Vec<_>>();
 
@@ -44,7 +44,7 @@ impl Config {
     }
 
     /// Runs an individual client.
-    fn _run_client(&self) -> Vec<LatencyRecord> {
+    fn run_client(&self) -> Vec<LatencyRecord> {
         let client_start = Instant::now();
 
         // Connect to the server

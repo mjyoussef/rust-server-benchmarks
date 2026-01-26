@@ -27,17 +27,17 @@ pub struct Config {
     pub work: Work,
 
     /// The number of clients that are concurrently run.
-    pub num_clients: usize,
+    pub n_clients: usize,
 }
 
 impl Config {
     pub fn run(self) -> (usize, Vec<LatencyRecord>) {
         let cfg = Arc::new(self);
 
-        let handles: Vec<_> = (0..cfg.num_clients)
+        let handles: Vec<_> = (0..cfg.n_clients)
             .map(|_| {
                 let cfg_clone = cfg.clone();
-                cfg_clone._run_client()
+                cfg_clone.run_client()
             })
             .collect();
 
@@ -54,7 +54,7 @@ impl Config {
 
     /// Runs a single client of closed loop request generator. It returns the number of requests
     /// sent and the latency records received.
-    fn _run_client(self: Arc<Self>) -> (JoinHandle<usize>, JoinHandle<Vec<LatencyRecord>>) {
+    fn run_client(self: Arc<Self>) -> (JoinHandle<usize>, JoinHandle<Vec<LatencyRecord>>) {
         let stream = TcpStream::connect(self.addr).unwrap();
         stream.set_nodelay(true).unwrap();
 
@@ -65,17 +65,16 @@ impl Config {
         let cfg_clone = self.clone();
         let stream_clone = stream.try_clone().unwrap();
         let done_clone = done.clone();
-        let receiver =
-            std::thread::spawn(move || cfg_clone._run_receiver(stream_clone, done_clone));
+        let receiver = std::thread::spawn(move || cfg_clone.run_receiver(stream_clone, done_clone));
 
         // Start the sender
-        let sender = std::thread::spawn(move || self._run_sender(stream, done));
+        let sender = std::thread::spawn(move || self.run_sender(stream, done));
 
         (sender, receiver)
     }
 
     /// Sends requests to the server.
-    fn _run_sender(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> usize {
+    fn run_sender(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> usize {
         let client_start = Instant::now();
         let mut excess_duration = Duration::from_micros(0);
 
@@ -119,7 +118,7 @@ impl Config {
     }
 
     /// Receives responses from the server.
-    fn _run_receiver(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> Vec<LatencyRecord> {
+    fn run_receiver(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> Vec<LatencyRecord> {
         let mut lrs = Vec::new();
 
         while !done.load(Ordering::SeqCst) {

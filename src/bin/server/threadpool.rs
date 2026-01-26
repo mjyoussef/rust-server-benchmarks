@@ -8,7 +8,7 @@ pub fn run(addr: SocketAddrV4, tp_size: usize) {
     let listener = TcpListener::bind(addr).unwrap();
 
     // Start the threadpool
-    let tp = ThreadPool::spawn(tp_size);
+    let tp = ThreadPool::new(tp_size);
 
     println!("Server listening at {}", addr);
 
@@ -46,7 +46,7 @@ struct ThreadPool<F> {
 }
 
 impl<F: FnOnce() + Send + 'static> ThreadPool<F> {
-    fn spawn(size: usize) -> Self {
+    fn new(size: usize) -> Self {
         let (tx, rx) = crossbeam_channel::unbounded::<F>();
 
         for _ in 0..size {

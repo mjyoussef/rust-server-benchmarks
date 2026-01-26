@@ -5,6 +5,7 @@ use std::{
 
 use clap::{Parser, ValueEnum};
 
+mod asynchronous;
 mod epoll;
 mod io_uring;
 mod threadpool;
@@ -12,24 +13,24 @@ mod threadpool;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-    /// The type of server
+    /// The type of server.
     #[arg(short, long)]
     kind: Kind,
 
-    /// Timeout in seconds
-    #[arg(short, long, default_value_t = 24)]
+    /// Timeout in seconds.
+    #[arg(short, long)]
     timeout: u64,
 
-    /// IP address to bind to
-    #[arg(short, long, default_value = "127.0.0.1")]
+    /// Server IP address.
+    #[arg(short, long)]
     ip: Ipv4Addr,
 
-    /// Port to bind to
-    #[arg(short, long, default_value_t = 8080)]
+    /// Server port.
+    #[arg(short, long)]
     port: u16,
 
-    /// Threadpool size (ignored for epoll, io_uring servers)
-    #[arg(short, long, default_value_t = 16)]
+    /// Used for threadpool.rs.
+    #[arg(short, long)]
     tp_size: usize,
 }
 

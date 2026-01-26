@@ -19,29 +19,36 @@ struct Args {
     kind: Kind,
 
     /// Timeout in seconds.
-    #[arg(short, long, default_value_t = 6)]
+    #[arg(short, long)]
     runtime: u64,
 
-    /// Delay in microseconds. This argument is ignored if using
-    /// the closed loop request generator.
-    #[arg(short, long)]
-    delay: u64,
-
     /// IP address of the server.
-    #[arg(long, default_value = "127.0.0.1")]
+    #[arg(short, long)]
     ip: Ipv4Addr,
 
     /// Port of the server.
-    #[arg(long, default_value_t = 8080)]
+    #[arg(short, long)]
     port: u16,
 
-    /// The number of clients.
-    #[arg(long, default_value_t = 1)]
-    num_clients: usize,
-
-    /// Directory to write results to
+    /// The directory to write results to.
     #[arg(short, long)]
     dir: PathBuf,
+
+    /// Used for open and partial open loop request generators.
+    #[arg(short, long)]
+    delay: u64,
+
+    /// Used for the the closed loop request generator.
+    #[arg(short, long)]
+    n_clients: usize,
+
+    /// Used for the partial open loop request generator.
+    #[arg(short, long)]
+    max_clients: usize,
+
+    /// Used for the partial open loop request generator.
+    #[arg(short, long)]
+    n_requests: usize,
 
     /// The workload type.
     #[command(subcommand)]
@@ -52,6 +59,7 @@ struct Args {
 enum Kind {
     Closed,
     Open,
+    Partial,
 }
 
 fn main() {
@@ -67,12 +75,11 @@ fn main() {
                 addr,
                 runtime,
                 work: args.work,
-                num_clients: args.num_clients,
+                n_clients: args.n_clients,
             };
             let lrs = cfg.run();
             let n_reqs = lrs.len();
             let path = dir.join("closed/stats.txt");
-            println!("{:?}", path);
             write_stats(lrs, n_reqs, args.runtime, &path).unwrap();
         }
         Kind::Open => {
@@ -81,10 +88,25 @@ fn main() {
                 runtime,
                 delay,
                 work: args.work,
-                num_clients: args.num_clients,
+                n_clients: args.n_clients,
             };
             let (n_reqs, lrs) = cfg.run();
             let path = dir.join("open/stats.txt");
+            write_stats(lrs, n_reqs, args.runtime, &path).unwrap();
+        }
+        Kind::Partial => {
+            let cfg = partial_open_loop::Config {
+                addr,
+                runtime,
+                delay,
+                work: args.work,
+                max_clients: args.max_clients,
+                n_requests: args.n_requests,
+            };
+
+            let lrs = cfg.run();
+            let n_reqs = lrs.len();
+            let path = dir.join("partial/stats.txt");
             write_stats(lrs, n_reqs, args.runtime, &path).unwrap();
         }
     };
