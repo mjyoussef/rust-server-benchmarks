@@ -12,7 +12,7 @@ use rust_server_benchmarks::protocol::{
 
 pub fn run(addr: SocketAddrV4, n_threads: usize, capacity: usize, max_events: usize) {
     let listener = TcpListener::bind(addr).unwrap();
-    let (tx, rx) = unbounded::<TcpStream>();
+    let (tx, rx) = unbounded();
     println!("Server listening at {}", addr);
 
     // Start each epoll thread
@@ -55,9 +55,14 @@ struct Connection {
 
 impl Connection {
     fn new(stream: Option<TcpStream>) -> Self {
+        let mut buf = vec![0u8; REQUEST_SIZE.max(RESPONSE_SIZE)];
+        unsafe {
+            buf.set_len(REQUEST_SIZE);
+        }
+
         Self {
             stream,
-            buf: Cursor::new(vec![0u8; REQUEST_SIZE]),
+            buf: Cursor::new(buf),
             idx: 0,
             action: Action::Read,
         }
@@ -78,12 +83,14 @@ impl Connection {
 
     /// Reinitializes a connection for a new action.
     fn reinitialize(&mut self, state: Action) {
-        let new_buf_length = match state {
+        let new_buf_len = match state {
             Action::Read => REQUEST_SIZE,
             Action::Write => RESPONSE_SIZE,
         };
 
-        self.buf.get_mut().resize(new_buf_length, 0);
+        unsafe {
+            self.buf.get_mut().set_len(new_buf_len);
+        }
         self.idx = 0;
         self.action = state;
     }
@@ -165,10 +172,8 @@ impl Epoll {
     /// Creates a new `Epoll` instance.
     fn new(capacity: usize) -> Self {
         let epoll_fd = epoll::Epoll::new(epoll::EpollCreateFlags::empty()).unwrap();
-        let conns = (0..capacity)
-            .map(|_| Connection::new(None))
-            .collect::<Vec<_>>();
-        let free_conns = (0..capacity).collect::<Vec<_>>();
+        let conns = (0..capacity).map(|_| Connection::new(None)).collect();
+        let free_conns = (0..capacity).collect();
 
         Self {
             epoll_fd,
@@ -291,8 +296,7 @@ impl EpollThread {
                 self.epoll.add(stream).unwrap();
             }
 
-            // Keep accepting connections until we've reached the capacity or there
-            // are no connections ready.
+            // Accept as many connections as possible
             while !self.epoll.is_full() {
                 match self.rx_conn.try_recv() {
                     Ok(stream) => {
@@ -317,12 +321,7 @@ impl EpollThread {
                             continue;
                         }
 
-                        if e.kind() == io::ErrorKind::UnexpectedEof {
-                            self.epoll.delete(id).unwrap();
-                        } else {
-                            eprintln!("unexpected error: {e}");
-                            // TODO: it might be a good idea to drop the connection.
-                        }
+                        self.epoll.delete(id).unwrap();
                     }
                     _ => match conn.action {
                         Action::Read => {

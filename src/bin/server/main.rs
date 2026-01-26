@@ -32,13 +32,26 @@ struct Args {
     /// Used for threadpool.rs.
     #[arg(short, long)]
     tp_size: usize,
+
+    /// Used for epoll.rs
+    #[arg(short, long)]
+    epoll_n_threads: usize,
+
+    /// Used for epoll.rs
+    #[arg(short, long)]
+    epoll_capacity: usize,
+
+    /// Used for epoll.rs
+    #[arg(short, long)]
+    epoll_max_events: usize,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Kind {
+    ThreadPool,
     Epoll,
     IOUring,
-    ThreadPool,
+    Async,
 }
 
 fn main() {
@@ -47,14 +60,22 @@ fn main() {
     let addr = SocketAddrV4::new(args.ip, args.port);
 
     std::thread::spawn(move || match args.kind {
+        Kind::ThreadPool => {
+            threadpool::run(addr, args.tp_size);
+        }
         Kind::Epoll => {
-            todo!("not implemented")
+            epoll::run(
+                addr,
+                args.epoll_n_threads,
+                args.epoll_capacity,
+                args.epoll_max_events,
+            );
         }
         Kind::IOUring => {
             todo!("not implemented")
         }
-        Kind::ThreadPool => {
-            threadpool::run(addr, args.tp_size);
+        Kind::Async => {
+            todo!("not implemented")
         }
     });
 

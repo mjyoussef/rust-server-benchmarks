@@ -1,7 +1,7 @@
 use std::{
     io::{Error, ErrorKind, Read, Result, Write},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use clap::Subcommand;
