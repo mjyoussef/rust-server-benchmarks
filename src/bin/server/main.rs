@@ -33,17 +33,29 @@ struct Args {
     #[arg(short, long)]
     tp_size: usize,
 
-    /// Used for epoll.rs
+    /// Used for epoll.rs.
     #[arg(short, long)]
     epoll_n_threads: usize,
 
-    /// Used for epoll.rs
+    /// Used for epoll.rs.
     #[arg(short, long)]
     epoll_capacity: usize,
 
-    /// Used for epoll.rs
+    /// Used for epoll.rs.
     #[arg(short, long)]
     epoll_max_events: usize,
+
+    /// Used for io_uring.rs.
+    #[arg(short, long)]
+    io_uring_n_threads: usize,
+
+    /// Used for io_uring.rs.
+    #[arg(short, long)]
+    io_uring_capacity: usize,
+
+    /// Used for io_uring.rs.
+    #[arg(short, long)]
+    io_uring_batch_size: usize,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
@@ -72,7 +84,12 @@ fn main() {
             );
         }
         Kind::IOUring => {
-            todo!("not implemented")
+            io_uring::run(
+                addr,
+                args.io_uring_n_threads,
+                args.io_uring_capacity,
+                args.io_uring_batch_size,
+            );
         }
         Kind::Async => {
             todo!("not implemented")

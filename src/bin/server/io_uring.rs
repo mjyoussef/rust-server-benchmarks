@@ -9,7 +9,7 @@ use io_uring::{IoUring, SubmissionQueue, opcode, types};
 use nix::libc;
 use rust_server_benchmarks::protocol::{REQUEST_SIZE, RESPONSE_SIZE, Request, Response};
 
-pub fn run(addr: SocketAddrV4, n_threads: usize, queue_size: usize, batch_size: usize) {
+pub fn run(addr: SocketAddrV4, n_threads: usize, capacity: usize, batch_size: usize) {
     let listener = TcpListener::bind(addr).unwrap();
     let (tx, rx) = unbounded();
     println!("Server listening at {}", addr);
@@ -18,7 +18,7 @@ pub fn run(addr: SocketAddrV4, n_threads: usize, queue_size: usize, batch_size: 
     for _ in 0..n_threads {
         let rx = rx.clone();
         std::thread::spawn(move || {
-            IOUringThread::new(queue_size, batch_size, rx).run();
+            IOUringThread::new(capacity, batch_size, rx).run();
         });
     }
 
@@ -44,7 +44,10 @@ struct Connection {
     op: Operation,
 
     /// Buffer for reading/writing on the connection.
-    buf: Vec<u8>,
+    buf: Box<[u8]>,
+
+    /// The size of the buffer.
+    buf_len: usize,
 
     /// Index into the buffer for reading or writing.
     idx: usize,
@@ -52,15 +55,11 @@ struct Connection {
 
 impl Connection {
     fn new() -> Self {
-        let mut buf = Vec::with_capacity(REQUEST_SIZE.max(RESPONSE_SIZE));
-        unsafe {
-            buf.set_len(REQUEST_SIZE);
-        }
-
         Self {
             stream: None,
             op: Operation::Read,
-            buf,
+            buf: vec![0u8; REQUEST_SIZE.max(RESPONSE_SIZE)].into_boxed_slice(),
+            buf_len: REQUEST_SIZE,
             idx: 0,
         }
     }
@@ -69,9 +68,10 @@ impl Connection {
     fn init(&mut self, stream: TcpStream, op: Operation) {
         self.stream = Some(stream);
         self.op = op;
-        unsafe {
-            self.buf.set_len(REQUEST_SIZE);
-        }
+        self.buf_len = match self.op {
+            Operation::Read => REQUEST_SIZE,
+            Operation::Write => RESPONSE_SIZE,
+        };
         self.idx = 0;
     }
 
@@ -81,24 +81,17 @@ impl Connection {
         self.stream = None;
     }
 
-    /// Switches the action and reinitializes the connection state. If the current action
-    /// is reading, then the connection is prepared for writing (and vice-versa).
-    fn switch(&mut self) {
-        match self.op {
-            Operation::Read => {
-                self.op = Operation::Write;
-                unsafe {
-                    self.buf.set_len(RESPONSE_SIZE);
-                }
-            }
-            Operation::Write => {
-                self.op = Operation::Read;
-                unsafe {
-                    self.buf.set_len(REQUEST_SIZE);
-                }
-            }
-        }
+    /// Prepares the connection state for reading.
+    fn prep_read(&mut self) {
+        self.op = Operation::Read;
+        self.buf_len = REQUEST_SIZE;
+        self.idx = 0;
+    }
 
+    /// Prepares the connection state for writing.
+    fn prep_write(&mut self) {
+        self.op = Operation::Write;
+        self.buf_len = RESPONSE_SIZE;
         self.idx = 0;
     }
 
@@ -106,17 +99,17 @@ impl Connection {
     /// is complete and `false` if only a partial # of bytes were read/written.
     fn handle_io_success(&mut self, result: usize) -> bool {
         self.idx += result;
-        self.idx == self.buf.len()
+        self.idx == self.buf_len
     }
 
     /// Deserializes a request from the connection's buffer.
     fn deserialize_request(&self) -> io::Result<Request> {
-        Request::deserialize(&self.buf[..REQUEST_SIZE])
+        Request::deserialize(&self.buf[..self.buf_len])
     }
 
     /// Serializes a response into the connection's buffer.
     fn serialize_response(&mut self, response: Response) {
-        response.serialize(&mut self.buf[..RESPONSE_SIZE]);
+        response.serialize(&mut self.buf[..self.buf_len]);
     }
 
     /// Returns a pointer to the connection buffer.
@@ -124,9 +117,9 @@ impl Connection {
         self.buf[self.idx..].as_mut_ptr()
     }
 
-    /// Returns the length of the connection buffer.
+    /// Returns the remaining length of the connection buffer.
     fn get_buf_len(&self) -> u32 {
-        self.buf[self.idx..].len() as u32
+        (self.buf_len - self.idx) as u32
     }
 }
 
@@ -134,11 +127,11 @@ struct IOUringThread {
     /// The io_uring file descriptor.
     ring: IoUring,
 
-    /// The maximum number of entries (ie. connections) the ring can handle.
+    /// The maximum # of concurrent connections that can be handled.
     ring_capacity: usize,
 
-    /// The maximum number of entries that are drained from the completion queue
-    /// in each polling cycle (see `IOUringThread::run` for more details).
+    /// The maximum # of connections that are handled in each polling cycle
+    /// (see `IOUringThread::run` for more details).
     batch_size: usize,
 
     /// Connection pool
@@ -205,12 +198,12 @@ impl IOUringThread {
                                     }
                                 };
                                 let response = request.do_work();
-                                conn.switch();
+                                conn.prep_write();
                                 conn.serialize_response(response);
                                 IOUringThread::queue_write(&mut sq, conn, conn_idx);
                             }
                             Operation::Write => {
-                                conn.switch();
+                                conn.prep_read();
                                 IOUringThread::queue_read(&mut sq, conn, conn_idx);
                             }
                         }
@@ -238,6 +231,9 @@ impl IOUringThread {
                 } else if result <= 0 {
                     // We've reached the end of the file or there was an unrecoverable
                     // error -> drop the connection
+                    if result < 0 {
+                        eprintln!("operation with failed with error code {result}");
+                    }
                     conn.drop();
                     self.free_conns.push(conn_idx);
                 }
@@ -245,6 +241,7 @@ impl IOUringThread {
         }
     }
 
+    /// Returns the # of connections being handled.
     fn ring_len(&self) -> usize {
         self.ring_capacity - self.free_conns.len()
     }
@@ -263,7 +260,7 @@ impl IOUringThread {
             };
 
             // Initialize the connection
-            let conn_idx = self.free_conns.pop().expect("no entries available");
+            let conn_idx = self.free_conns.pop().expect("submission queue is full.");
             let conn = &mut self.conns[conn_idx];
             conn.init(stream, Operation::Read);
 
@@ -301,7 +298,7 @@ impl IOUringThread {
     fn queue_write(sq: &mut SubmissionQueue<'_>, conn: &mut Connection, conn_idx: usize) {
         let stream = conn.stream.as_ref().unwrap();
 
-        let recv_sqe = opcode::Send::new(
+        let send_sqe = opcode::Send::new(
             types::Fd(stream.as_raw_fd()),
             conn.get_buf_ptr(),
             conn.get_buf_len(),
@@ -310,7 +307,7 @@ impl IOUringThread {
         .user_data(conn_idx as u64);
 
         unsafe {
-            sq.push(&recv_sqe).unwrap();
+            sq.push(&send_sqe).unwrap();
         }
     }
 }
