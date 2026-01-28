@@ -1,4 +1,5 @@
 use std::{
+    io::{Read, Write},
     net::{SocketAddrV4, TcpStream},
     sync::{
         Arc,
@@ -10,7 +11,7 @@ use std::{
 
 use rust_server_benchmarks::{
     get_time,
-    protocol::{Deserialize, LatencyRecord, Request, Response, Serialize, Work},
+    protocol::{LatencyRecord, REQUEST_SIZE, RESPONSE_SIZE, Request, Response, Work},
 };
 
 pub struct Config {
@@ -75,6 +76,9 @@ impl Config {
 
     /// Sends requests to the server.
     fn run_sender(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> usize {
+        // Buffer for serializing
+        let mut buf = vec![0u8; REQUEST_SIZE];
+
         let client_start = Instant::now();
         let mut excess_duration = Duration::from_micros(0);
 
@@ -95,7 +99,8 @@ impl Config {
                 send_time: get_time(),
                 work: self.work,
             };
-            req.serialize(&mut stream).unwrap();
+            req.serialize(&mut buf);
+            stream.write_all(&buf).unwrap();
 
             if is_last {
                 return requests_sent;
@@ -119,10 +124,14 @@ impl Config {
 
     /// Receives responses from the server.
     fn run_receiver(&self, mut stream: TcpStream, done: Arc<AtomicBool>) -> Vec<LatencyRecord> {
+        // Buffer for deserializing
+        let mut buf = vec![0u8; RESPONSE_SIZE];
+
         let mut lrs = Vec::new();
 
         while !done.load(Ordering::SeqCst) {
-            let response = Response::deserialize(&mut stream).unwrap();
+            stream.read_exact(&mut buf).unwrap();
+            let response = Response::deserialize(&mut buf).unwrap();
             let lr = response.to_latency_record();
             lrs.push(lr);
         }

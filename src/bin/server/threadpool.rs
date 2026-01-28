@@ -1,68 +1,60 @@
-use crossbeam_channel::{SendError, Sender};
-use rust_server_benchmarks::protocol::{Deserialize, Request, Serialize};
-use std::io::ErrorKind;
+use crossbeam_channel::{Receiver, unbounded};
+use rust_server_benchmarks::protocol::{REQUEST_SIZE, RESPONSE_SIZE, Request};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddrV4, TcpListener, TcpStream};
 
 pub fn run(addr: SocketAddrV4, tp_size: usize) {
     // Create our listener socket
     let listener = TcpListener::bind(addr).unwrap();
 
-    // Start the threadpool
-    let tp = ThreadPool::new(tp_size);
-
     println!("Server listening at {}", addr);
+
+    // Create the threadpool
+    let (tx, rx) = unbounded();
+    create_thread_pool(tp_size, &rx);
 
     // Accept connections
     for stream in listener.incoming() {
-        tp.execute(move || _handle_client(stream.unwrap())).unwrap();
+        let stream = stream.unwrap();
+        stream.set_nodelay(true).unwrap();
+        tx.send(stream).unwrap();
     }
 }
 
-fn _handle_client(mut stream: TcpStream) {
-    stream.set_nodelay(true).unwrap();
+fn create_thread_pool(tp_size: usize, rx: &Receiver<TcpStream>) {
+    for _ in 0..tp_size {
+        let rx = rx.clone();
+        std::thread::spawn(move || {
+            // Reusable buffer for serializing/deserializing requests/responses
+            let mut buf = vec![0u8; REQUEST_SIZE.max(RESPONSE_SIZE)];
 
-    loop {
-        // Deserialize and handle the request
-        let response = match Request::deserialize(&mut stream) {
-            Ok(request) => request.do_work(),
-            Err(e) => {
-                if e.kind() != ErrorKind::UnexpectedEof {
-                    eprintln!("{e}");
+            for mut stream in rx {
+                loop {
+                    // Receive request and do work
+                    if let Err(e) = stream.read_exact(&mut buf[..REQUEST_SIZE]) {
+                        eprintln!("{e}");
+                        break;
+                    }
+
+                    let response = match Request::deserialize(&buf[..REQUEST_SIZE]) {
+                        Ok(request) => request.do_work(),
+                        Err(e) => {
+                            if e.kind() != ErrorKind::UnexpectedEof {
+                                eprintln!("{e}");
+                            }
+
+                            break;
+                        }
+                    };
+
+                    // Send response
+                    response.serialize(&mut buf[..RESPONSE_SIZE]);
+                    if let Err(e) = stream.write_all(&buf[..RESPONSE_SIZE]) {
+                        eprintln!("{e}");
+                        break;
+                    }
                 }
-
-                break;
             }
-        };
-
-        // Serialize and send the response
-        if let Err(e) = response.serialize(&mut stream) {
-            eprintln!("{e}");
-        }
-    }
-}
-
-struct ThreadPool<F> {
-    tx: Sender<F>,
-}
-
-impl<F: FnOnce() + Send + 'static> ThreadPool<F> {
-    fn new(size: usize) -> Self {
-        let (tx, rx) = crossbeam_channel::unbounded::<F>();
-
-        for _ in 0..size {
-            let rx_clone = rx.clone();
-            std::thread::spawn(|| {
-                for f in rx_clone {
-                    f();
-                }
-            });
-        }
-
-        Self { tx }
-    }
-
-    fn execute(&self, f: F) -> Result<(), SendError<F>> {
-        self.tx.send(f)?;
-        Ok(())
+        });
     }
 }

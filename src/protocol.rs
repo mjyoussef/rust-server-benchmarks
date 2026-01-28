@@ -1,7 +1,7 @@
 use std::{
-    io::{Error, ErrorKind, Read, Result, Write},
+    io::{Error, ErrorKind, Result},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use clap::Subcommand;
@@ -16,16 +16,6 @@ pub struct LatencyRecord {
     pub recv_time: u64,
 }
 
-pub trait Serialize<T> {
-    fn serialize(self, bytes: &mut T) -> Result<()>;
-}
-
-pub trait Deserialize<T> {
-    fn deserialize(bytes: &mut T) -> Result<Self>
-    where
-        Self: Sized;
-}
-
 /// Represents a client request.
 pub struct Request {
     /// The time (in nanoseconds) the request was sent.
@@ -35,21 +25,15 @@ pub struct Request {
     pub work: Work,
 }
 
-impl<T: Write> Serialize<T> for Request {
-    fn serialize(self, bytes: &mut T) -> Result<()> {
-        bytes.write_all(&self.send_time.to_be_bytes())?;
-        self.work.serialize(bytes)?;
-        Ok(())
+impl Request {
+    pub fn serialize(self, bytes: &mut [u8]) {
+        bytes[0..8].copy_from_slice(&self.send_time.to_be_bytes());
+        self.work.serialize(&mut bytes[8..]);
     }
-}
 
-impl<T: Read> Deserialize<T> for Request {
-    fn deserialize(bytes: &mut T) -> Result<Self> {
-        let mut send_time_bytes = [0u8; 8];
-        bytes.read_exact(&mut send_time_bytes)?;
-
-        let send_time = u64::from_be_bytes(send_time_bytes);
-        let work = Work::deserialize(bytes)?;
+    pub fn deserialize(bytes: &[u8]) -> Result<Self> {
+        let send_time = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+        let work = Work::deserialize(&bytes[8..])?;
         Ok(Self { send_time, work })
     }
 }
@@ -70,6 +54,15 @@ pub struct Response {
 }
 
 impl Response {
+    pub fn serialize(self, bytes: &mut [u8]) {
+        bytes[0..8].copy_from_slice(&self.client_send_time.to_be_bytes());
+    }
+
+    pub fn deserialize(bytes: &[u8]) -> Result<Self> {
+        let client_send_time = u64::from_be_bytes(bytes[0..8].try_into().unwrap());
+        Ok(Self { client_send_time })
+    }
+
     pub fn to_latency_record(&self) -> LatencyRecord {
         let send_time = self.client_send_time;
         let recv_time = get_time();
@@ -82,23 +75,6 @@ impl Response {
             send_time: self.client_send_time,
             recv_time: get_time(),
         }
-    }
-}
-
-impl<T: Write> Serialize<T> for Response {
-    fn serialize(self, bytes: &mut T) -> Result<()> {
-        bytes.write_all(&self.client_send_time.to_be_bytes())?;
-        Ok(())
-    }
-}
-
-impl<T: Read> Deserialize<T> for Response {
-    fn deserialize(bytes: &mut T) -> Result<Self> {
-        let mut send_time_bytes = [0u8; 8];
-        bytes.read_exact(&mut send_time_bytes)?;
-
-        let client_send_time = u64::from_be_bytes(send_time_bytes);
-        Ok(Self { client_send_time })
     }
 }
 
@@ -127,51 +103,32 @@ impl Work {
     }
 }
 
-impl<T: Write> Serialize<T> for Work {
-    fn serialize(self, bytes: &mut T) -> Result<()> {
+impl Work {
+    fn serialize(&self, bytes: &mut [u8]) {
         match self {
             Work::Constant => {
-                bytes.write_all(&[0])?;
-                bytes.write_all(&[0u8; 8])?;
+                bytes[0] = 0;
             }
             Work::Busy { amt } => {
-                bytes.write_all(&[1])?;
-                bytes.write_all(&amt.to_be_bytes())?;
+                bytes[0] = 1;
+                bytes[1..9].copy_from_slice(&amt.to_be_bytes());
             }
             Work::Sleep { micros } => {
-                bytes.write_all(&[2])?;
-                bytes.write_all(&micros.to_be_bytes())?;
+                bytes[0] = 2;
+                bytes[1..9].copy_from_slice(&micros.to_be_bytes());
             }
         }
-
-        Ok(())
     }
-}
 
-impl<T: Read> Deserialize<T> for Work {
-    fn deserialize(bytes: &mut T) -> Result<Self> {
-        let mut id = [0u8; 1];
-        bytes.read_exact(&mut id)?;
-
-        match id[0] {
-            0 => {
-                bytes.read_exact(&mut [0u8; 8])?;
-                Ok(Work::Constant)
-            }
-            1 => {
-                let mut amt_bytes = [0u8; 8];
-                bytes.read_exact(&mut amt_bytes)?;
-                Ok(Work::Busy {
-                    amt: u64::from_be_bytes(amt_bytes),
-                })
-            }
-            2 => {
-                let mut micros_bytes = [0u8; 8];
-                bytes.read_exact(&mut micros_bytes)?;
-                Ok(Work::Sleep {
-                    micros: u64::from_be_bytes(micros_bytes),
-                })
-            }
+    fn deserialize(bytes: &[u8]) -> Result<Self> {
+        match bytes[0] {
+            0 => Ok(Work::Constant),
+            1 => Ok(Work::Busy {
+                amt: u64::from_be_bytes(bytes[1..9].try_into().unwrap()),
+            }),
+            2 => Ok(Work::Sleep {
+                micros: u64::from_be_bytes(bytes[1..9].try_into().unwrap()),
+            }),
             n => Err(Error::new(
                 ErrorKind::InvalidData,
                 format!("failed to deserialize work message: {n} is an invalid work id"),

@@ -1,4 +1,5 @@
 use std::{
+    io::{Read, Write},
     net::{SocketAddrV4, TcpStream},
     sync::{
         Arc,
@@ -10,7 +11,7 @@ use std::{
 
 use rust_server_benchmarks::{
     get_time,
-    protocol::{Deserialize, LatencyRecord, Request, Response, Serialize, Work},
+    protocol::{LatencyRecord, REQUEST_SIZE, RESPONSE_SIZE, Request, Response, Work},
 };
 
 use crossbeam_channel::{Receiver, unbounded};
@@ -98,6 +99,8 @@ impl Config {
         let done = done.clone();
 
         std::thread::spawn(move || {
+            // Buffer for serializing/deserializing
+            let mut buf = vec![0u8; REQUEST_SIZE.max(RESPONSE_SIZE)];
             ready.fetch_add(1, Ordering::Release);
             let mut lrs = Vec::new();
 
@@ -111,14 +114,19 @@ impl Config {
                 stream.set_nodelay(true).unwrap();
 
                 for _ in 0..self.n_requests {
+                    // Send request
                     let req = Request {
                         send_time: get_time(),
                         work: self.work,
                     };
-                    req.serialize(&mut stream).unwrap();
+                    req.serialize(&mut buf[0..REQUEST_SIZE]);
+                    stream.write_all(&buf[0..REQUEST_SIZE]).unwrap();
 
-                    let resp = Response::deserialize(&mut stream).unwrap();
-                    lrs.push(resp.to_latency_record());
+                    // Receive response
+                    stream.read_exact(&mut buf[0..RESPONSE_SIZE]).unwrap();
+                    let response = Response::deserialize(&buf[0..RESPONSE_SIZE]).unwrap();
+                    let lr = response.to_latency_record();
+                    lrs.push(lr);
                 }
 
                 ready.fetch_add(1, Ordering::AcqRel);

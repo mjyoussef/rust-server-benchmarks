@@ -1,14 +1,12 @@
 use std::{
-    io::{self, Cursor, Read, Write},
+    io::{self, Read, Write},
     net::{SocketAddrV4, TcpListener, TcpStream},
 };
 
 use nix::sys::*;
 
 use crossbeam_channel::{Receiver, unbounded};
-use rust_server_benchmarks::protocol::{
-    Deserialize, REQUEST_SIZE, RESPONSE_SIZE, Request, Response, Serialize,
-};
+use rust_server_benchmarks::protocol::{REQUEST_SIZE, RESPONSE_SIZE, Request, Response};
 
 pub fn run(addr: SocketAddrV4, n_threads: usize, capacity: usize, max_events: usize) {
     let listener = TcpListener::bind(addr).unwrap();
@@ -44,7 +42,7 @@ struct Connection {
     /// A reusable buffer for reading from and writing to the client.
     /// This is wrapped in a `Cursor` so that `buf` implements the `io::{Read, Write}`
     /// traits, which are neccessary for the serialization/deserialization logic.
-    buf: Cursor<Vec<u8>>,
+    buf: Vec<u8>,
 
     /// The current index into the buffer for reading or writing.
     idx: usize,
@@ -56,13 +54,11 @@ struct Connection {
 impl Connection {
     fn new(stream: Option<TcpStream>) -> Self {
         let mut buf = vec![0u8; REQUEST_SIZE.max(RESPONSE_SIZE)];
-        unsafe {
-            buf.set_len(REQUEST_SIZE);
-        }
+        unsafe { buf.set_len(REQUEST_SIZE) };
 
         Self {
             stream,
-            buf: Cursor::new(buf),
+            buf,
             idx: 0,
             action: Action::Read,
         }
@@ -88,9 +84,7 @@ impl Connection {
             Action::Write => RESPONSE_SIZE,
         };
 
-        unsafe {
-            self.buf.get_mut().set_len(new_buf_len);
-        }
+        unsafe { self.buf.set_len(new_buf_len) };
         self.idx = 0;
         self.action = state;
     }
@@ -103,12 +97,12 @@ impl Connection {
             .as_mut()
             .expect("cannot read/write from a stream that's uninitialized");
 
-        let size = self.buf.get_ref().len();
+        let size = self.buf.len();
 
         loop {
             let result = match self.action {
-                Action::Read => stream.read(&mut self.buf.get_mut()[self.idx..]),
-                _ => stream.write(&mut self.buf.get_mut()[self.idx..]),
+                Action::Read => stream.read(&mut self.buf[self.idx..]),
+                _ => stream.write(&mut self.buf[self.idx..]),
             };
 
             match result {
@@ -144,12 +138,10 @@ impl Connection {
     }
 
     fn deserialize_request(&mut self) -> io::Result<Request> {
-        self.buf.set_position(0);
         Request::deserialize(&mut self.buf)
     }
 
-    fn serialize_response(&mut self, response: Response) -> io::Result<()> {
-        self.buf.set_position(0);
+    fn serialize_response(&mut self, response: Response) {
         response.serialize(&mut self.buf)
     }
 }
@@ -232,12 +224,14 @@ impl Epoll {
         Ok(())
     }
 
+    /// Waits for file descriptors in the interest list to be ready.
     fn wait(&mut self, events: &mut [epoll::EpollEvent]) -> io::Result<usize> {
         let event_count = self.epoll_fd.wait(events, epoll::EpollTimeout::NONE)?;
         Ok(event_count)
     }
 
     /// Gets an immutable reference to a connection.
+    #[allow(unused)]
     fn get_ref(&self, id: usize) -> &Connection {
         &self.conns[id]
     }
@@ -326,7 +320,7 @@ impl EpollThread {
                     _ => match conn.action {
                         Action::Read => {
                             let response = conn.deserialize_request().unwrap().do_work();
-                            conn.serialize_response(response).unwrap();
+                            conn.serialize_response(response);
                             self.epoll.modify(id, Action::Write).unwrap();
                         }
                         Action::Write => {
