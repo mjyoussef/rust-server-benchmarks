@@ -5,7 +5,7 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, unbounded};
-use io_uring::{IoUring, opcode, types};
+use io_uring::{IoUring, SubmissionQueue, opcode, types};
 use nix::libc;
 use rust_server_benchmarks::protocol::{REQUEST_SIZE, RESPONSE_SIZE, Request, Response};
 
@@ -98,7 +98,7 @@ impl Connection {
     }
 
     fn handle_io_success(&mut self, result: usize) -> bool {
-        self.idx += result as usize;
+        self.idx += result;
         self.idx == self.buf.len()
     }
 
@@ -117,9 +117,6 @@ struct IOUringThread {
 
     /// The maximum number of entries (ie. connections) the ring can handle.
     ring_capacity: usize,
-
-    /// The current number of entries being handled.
-    ring_len: usize,
 
     /// The maximum number of entries that are drained from the completion queue
     /// in each polling cycle (see `IOUringThread::run` for more details).
@@ -147,7 +144,6 @@ impl IOUringThread {
         Self {
             ring,
             ring_capacity,
-            ring_len: 0,
             batch_size,
             conns,
             free_conns,
@@ -156,11 +152,74 @@ impl IOUringThread {
     }
 
     fn run(mut self) {
-        // Prime the pipeline:
-        // Queue as many reads as possible. Note that we must have at least one
-        // connection, so we'll do a blocking `recv` when `idx == 0`.
-        for idx in 0..self.free_conns.len() {
-            let stream = if idx == 0 {
+        loop {
+            self.accept_conns();
+            self.submit_wait_batch();
+
+            let (_, mut sq, mut cq) = self.ring.split();
+
+            // Drain the completion queue and handle each IO result
+            while let Some(cqe) = cq.next() {
+                let conn_idx = cqe.user_data() as usize;
+                let conn = &mut self.conns[conn_idx];
+
+                let result = cqe.result();
+                if result > 0 {
+                    if conn.handle_io_success(result as usize) {
+                        // IO transfer is done -> queue new IO operation
+                        match conn.action {
+                            Action::Read => {
+                                let request = conn.deserialize_request().unwrap();
+                                let response = request.do_work();
+                                conn.switch();
+                                conn.serialize_response(response);
+                                IOUringThread::queue_write(&mut sq, conn, conn_idx);
+                            }
+                            Action::Write => {
+                                conn.switch();
+                                IOUringThread::queue_read(&mut sq, conn, conn_idx);
+                            }
+                        }
+                    } else {
+                        // More bytes to read/write -> retry
+                        match conn.action {
+                            Action::Read => {
+                                IOUringThread::queue_read(&mut sq, conn, conn_idx);
+                            }
+                            Action::Write => {
+                                IOUringThread::queue_write(&mut sq, conn, conn_idx);
+                            }
+                        }
+                    }
+                } else if result == libc::EINTR {
+                    // The system call was interrupted -> retry
+                    match conn.action {
+                        Action::Read => {
+                            IOUringThread::queue_read(&mut sq, conn, conn_idx);
+                        }
+                        Action::Write => {
+                            IOUringThread::queue_write(&mut sq, conn, conn_idx);
+                        }
+                    }
+                } else if result <= 0 {
+                    // We've reached the end of the file or there was an unrecoverable
+                    // error -> drop the connection
+                    conn.drop();
+                    self.free_conns.push(conn_idx);
+                }
+            }
+        }
+    }
+
+    fn ring_len(&self) -> usize {
+        self.ring_capacity - self.free_conns.len()
+    }
+
+    /// Queues new connections while the ring has space and either the ring is empty
+    /// or receiving from `self.rx` doesn't block.
+    fn accept_conns(&mut self) {
+        for _ in 0..self.free_conns.len() {
+            let stream = if self.ring_len() == 0 {
                 self.rx.recv().unwrap()
             } else {
                 match self.rx.try_recv() {
@@ -169,59 +228,53 @@ impl IOUringThread {
                 }
             };
 
-            // Get an `EntryData` item for the connection
+            // Initialize the connection
             let conn_idx = self.free_conns.pop().expect("no entries available");
             let conn = &mut self.conns[conn_idx];
+            conn.init(stream);
 
             // Push the submission queue entry
-            let recv_sqe = opcode::Recv::new(
-                types::Fd(stream.as_raw_fd()),
-                conn.buf.as_mut_ptr(),
-                REQUEST_SIZE as u32,
-            )
-            .build()
-            .user_data(conn_idx as u64);
-            unsafe {
-                self.ring.submission().push(&recv_sqe).unwrap();
-            }
-
-            // Initialize the connection
-            conn.init(stream);
+            IOUringThread::queue_read(&mut self.ring.submission(), conn, conn_idx);
         }
+    }
 
-        // Submit and wait for `min(batch_size, ring_len)` entries to complete.
-        let mut batch_size = self.batch_size.min(self.ring_len);
-        let mut n_cqes = self.ring.submit_and_wait(batch_size).unwrap();
+    /// Submits and waits for a batch of IO operations to complete.
+    fn submit_wait_batch(&self) {
+        let batch_size = self.batch_size.min(self.ring_len());
+        self.ring.submit_and_wait(batch_size).unwrap();
+    }
 
-        // Pipeline:
-        loop {
-            // Drain the completion queue and handle each IO result
-            while let Some(cqe) = self.ring.completion().next() {
-                let conn = &mut self.conns[cqe.user_data() as usize];
+    /// Queues a read operation for a connection.
+    fn queue_read(sq: &mut SubmissionQueue<'_>, conn: &mut Connection, conn_idx: usize) {
+        let stream = conn.stream.as_ref().unwrap();
 
-                let result = cqe.result();
-                if result > 0 {
-                    if conn.handle_io_success(result as usize) {
-                        // IO transfer is done
-                        // TODO
-                    } else {
-                        // More bytes to read/write
-                        // TODO
-                    }
-                } else if result == 0 {
-                    // We've reached the end of the file -> drop the connection
-                    // TODO
-                } else if result == libc::EINTR {
-                    // The system call was interrupted -> retry
-                    // TODO
-                } else {
-                    // Unrecoverable error -> drop the connection
-                    // TODO
-                }
-            }
+        let recv_sqe = opcode::Recv::new(
+            types::Fd(stream.as_raw_fd()),
+            conn.buf.as_mut_ptr(),
+            REQUEST_SIZE as u32,
+        )
+        .build()
+        .user_data(conn_idx as u64);
 
-            // Queue new ops, accepting new connections as needed ONLY if available in
-            // `rx` and or `queue_size == 0`.
+        unsafe {
+            sq.push(&recv_sqe).unwrap();
+        }
+    }
+
+    /// Queues a write operation for a connection.
+    fn queue_write(sq: &mut SubmissionQueue<'_>, conn: &mut Connection, conn_idx: usize) {
+        let stream = conn.stream.as_ref().unwrap();
+
+        let recv_sqe = opcode::Send::new(
+            types::Fd(stream.as_raw_fd()),
+            conn.buf.as_mut_ptr(),
+            RESPONSE_SIZE as u32,
+        )
+        .build()
+        .user_data(conn_idx as u64);
+
+        unsafe {
+            sq.push(&recv_sqe).unwrap();
         }
     }
 }
