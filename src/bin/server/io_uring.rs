@@ -31,7 +31,7 @@ pub fn run(addr: SocketAddrV4, n_threads: usize, queue_size: usize, batch_size: 
     }
 }
 
-enum Action {
+enum Operation {
     Read,
     Write,
 }
@@ -40,10 +40,10 @@ struct Connection {
     /// The TCP connection.
     stream: Option<TcpStream>,
 
-    /// The action being performed on the connection.
-    action: Action,
+    /// The operation being performed on the connection.
+    op: Operation,
 
-    /// Reusable buffer for reading/writing on the connection.
+    /// Buffer for reading/writing on the connection.
     buf: Vec<u8>,
 
     /// Index into the buffer for reading or writing.
@@ -59,35 +59,40 @@ impl Connection {
 
         Self {
             stream: None,
-            action: Action::Read,
+            op: Operation::Read,
             buf,
             idx: 0,
         }
     }
 
-    fn init(&mut self, stream: TcpStream) {
+    /// Initializes a connection with the specified operation.
+    fn init(&mut self, stream: TcpStream, op: Operation) {
         self.stream = Some(stream);
-        self.action = Action::Read;
+        self.op = op;
         unsafe {
             self.buf.set_len(REQUEST_SIZE);
         }
         self.idx = 0;
     }
 
+    /// Drops the connection. This method doesn't reinitialize the connection state.
+    /// If you need to handle a new connection, you'll need to call `init`.
     fn drop(&mut self) {
         self.stream = None;
     }
 
+    /// Switches the action and reinitializes the connection state. If the current action
+    /// is reading, then the connection is prepared for writing (and vice-versa).
     fn switch(&mut self) {
-        match self.action {
-            Action::Read => {
-                self.action = Action::Write;
+        match self.op {
+            Operation::Read => {
+                self.op = Operation::Write;
                 unsafe {
                     self.buf.set_len(RESPONSE_SIZE);
                 }
             }
-            Action::Write => {
-                self.action = Action::Read;
+            Operation::Write => {
+                self.op = Operation::Read;
                 unsafe {
                     self.buf.set_len(REQUEST_SIZE);
                 }
@@ -97,17 +102,31 @@ impl Connection {
         self.idx = 0;
     }
 
+    /// Handles a successful IO operation. This method returns `true` if the operation
+    /// is complete and `false` if only a partial # of bytes were read/written.
     fn handle_io_success(&mut self, result: usize) -> bool {
         self.idx += result;
         self.idx == self.buf.len()
     }
 
+    /// Deserializes a request from the connection's buffer.
     fn deserialize_request(&self) -> io::Result<Request> {
         Request::deserialize(&self.buf[..REQUEST_SIZE])
     }
 
+    /// Serializes a response into the connection's buffer.
     fn serialize_response(&mut self, response: Response) {
         response.serialize(&mut self.buf[..RESPONSE_SIZE]);
+    }
+
+    /// Returns a pointer to the connection buffer.
+    fn get_buf_ptr(&mut self) -> *mut u8 {
+        self.buf[self.idx..].as_mut_ptr()
+    }
+
+    /// Returns the length of the connection buffer.
+    fn get_buf_len(&self) -> u32 {
+        self.buf[self.idx..].len() as u32
     }
 }
 
@@ -156,7 +175,13 @@ impl IOUringThread {
             self.accept_conns();
             self.submit_wait_batch();
 
+            // We're using `split` to avoid mutable borrow conflict that happens when draining the CQ
+            // while pushing entries to the SQ.
             let (_, mut sq, mut cq) = self.ring.split();
+
+            // Might need this..
+            // sq.sync();
+            // cq.sync();
 
             // Drain the completion queue and handle each IO result
             while let Some(cqe) = cq.next() {
@@ -167,37 +192,46 @@ impl IOUringThread {
                 if result > 0 {
                     if conn.handle_io_success(result as usize) {
                         // IO transfer is done -> queue new IO operation
-                        match conn.action {
-                            Action::Read => {
-                                let request = conn.deserialize_request().unwrap();
+                        match conn.op {
+                            Operation::Read => {
+                                let request = match conn.deserialize_request() {
+                                    Ok(request) => request,
+                                    Err(e) => {
+                                        // Log error and drop the connection
+                                        eprintln!("{e}");
+                                        conn.drop();
+                                        self.free_conns.push(conn_idx);
+                                        continue;
+                                    }
+                                };
                                 let response = request.do_work();
                                 conn.switch();
                                 conn.serialize_response(response);
                                 IOUringThread::queue_write(&mut sq, conn, conn_idx);
                             }
-                            Action::Write => {
+                            Operation::Write => {
                                 conn.switch();
                                 IOUringThread::queue_read(&mut sq, conn, conn_idx);
                             }
                         }
                     } else {
                         // More bytes to read/write -> retry
-                        match conn.action {
-                            Action::Read => {
+                        match conn.op {
+                            Operation::Read => {
                                 IOUringThread::queue_read(&mut sq, conn, conn_idx);
                             }
-                            Action::Write => {
+                            Operation::Write => {
                                 IOUringThread::queue_write(&mut sq, conn, conn_idx);
                             }
                         }
                     }
                 } else if result == libc::EINTR {
                     // The system call was interrupted -> retry
-                    match conn.action {
-                        Action::Read => {
+                    match conn.op {
+                        Operation::Read => {
                             IOUringThread::queue_read(&mut sq, conn, conn_idx);
                         }
-                        Action::Write => {
+                        Operation::Write => {
                             IOUringThread::queue_write(&mut sq, conn, conn_idx);
                         }
                     }
@@ -231,14 +265,16 @@ impl IOUringThread {
             // Initialize the connection
             let conn_idx = self.free_conns.pop().expect("no entries available");
             let conn = &mut self.conns[conn_idx];
-            conn.init(stream);
+            conn.init(stream, Operation::Read);
 
             // Push the submission queue entry
             IOUringThread::queue_read(&mut self.ring.submission(), conn, conn_idx);
         }
     }
 
-    /// Submits and waits for a batch of IO operations to complete.
+    /// Submits and waits for a batch of IO operations to complete. The size
+    /// of the batch is the minimum of `self.batch_size` and the current length
+    /// of the ring.
     fn submit_wait_batch(&self) {
         let batch_size = self.batch_size.min(self.ring_len());
         self.ring.submit_and_wait(batch_size).unwrap();
@@ -250,8 +286,8 @@ impl IOUringThread {
 
         let recv_sqe = opcode::Recv::new(
             types::Fd(stream.as_raw_fd()),
-            conn.buf.as_mut_ptr(),
-            REQUEST_SIZE as u32,
+            conn.get_buf_ptr(),
+            conn.get_buf_len(),
         )
         .build()
         .user_data(conn_idx as u64);
@@ -267,8 +303,8 @@ impl IOUringThread {
 
         let recv_sqe = opcode::Send::new(
             types::Fd(stream.as_raw_fd()),
-            conn.buf.as_mut_ptr(),
-            RESPONSE_SIZE as u32,
+            conn.get_buf_ptr(),
+            conn.get_buf_len(),
         )
         .build()
         .user_data(conn_idx as u64);
