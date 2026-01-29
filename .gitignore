@@ -26,3 +26,5 @@ target
 /target
 /results
 *.sh
+perf.data
+per.data.old

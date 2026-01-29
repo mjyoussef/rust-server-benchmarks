@@ -1,7 +1,6 @@
 # rust-server-benchmarks
 This repository contains Rust implementations and benchmarks of TCP servers built using thread pools, `epoll`, `io_uring`, and async Rust (`tokio`). It also includes closed-loop, open-loop, and partially open-loop request generators to evaluate performance under different workloads.
 
-## Notes
-* The `epoll` and `io_uring` servers can only be run in a Linux environment. The `epoll` server can be modified to use an alternative API (ie. `kqueue` in BSD or Darwin), but that is not the case for `io_uring`.
+## Debugging
+* The `io_uring` server can only be run in a Linux environment, as this is a Linux-specific API. The `epoll` server can be modified to use an alternative API (ie. `kqueue` in BSD or Darwin). This is also the case with the shell scripts, which use `perf` for performance profiling and `taskset` to ensure that the client and server processes are not scheduled on shared CPU cores, but you can disable and/or use a platform-specific alternative.
 * Spawning a large # of threads in any of the request generators can cause connections to unexpectedly terminate. This isn't exactly a bug. It's just that the server isn't able to handle the load and quickly hits resource limits, so the kernel forcefully shuts down sockets.
-* You might notice no performance gain (and likely worse results compared to a vanilla server) if you're using a single thread for any of the request generators. This is expected since the servers are optimized for handling concurrent connections (e.g., via batching, parallelism, etc).

@@ -172,10 +172,6 @@ impl IOUringThread {
             // while pushing entries to the SQ.
             let (_, mut sq, mut cq) = self.ring.split();
 
-            // Might need this..
-            // sq.sync();
-            // cq.sync();
-
             // Drain the completion queue and handle each IO result
             while let Some(cqe) = cq.next() {
                 let conn_idx = cqe.user_data() as usize;
