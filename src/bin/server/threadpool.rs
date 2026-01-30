@@ -32,17 +32,16 @@ fn create_thread_pool(tp_size: usize, rx: &Receiver<TcpStream>) {
                 loop {
                     // Receive request and do work
                     if let Err(e) = stream.read_exact(&mut buf[..REQUEST_SIZE]) {
-                        eprintln!("{e}");
+                        if e.kind() != ErrorKind::UnexpectedEof {
+                            eprintln!("{e}");
+                        }
                         break;
                     }
 
                     let response = match Request::deserialize(&buf[..REQUEST_SIZE]) {
                         Ok(request) => request.do_work(),
                         Err(e) => {
-                            if e.kind() != ErrorKind::UnexpectedEof {
-                                eprintln!("{e}");
-                            }
-
+                            eprintln!("{e}");
                             break;
                         }
                     };

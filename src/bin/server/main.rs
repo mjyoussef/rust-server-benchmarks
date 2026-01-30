@@ -56,14 +56,18 @@ struct Args {
     /// Used for io_uring.rs.
     #[arg(short, long)]
     io_uring_batch_size: usize,
+
+    /// Used for asynchronous.rs.
+    #[arg(short, long)]
+    tokio_n_threads: usize,
 }
 
 #[derive(Clone, Debug, ValueEnum)]
 enum Kind {
     ThreadPool,
+    Async,
     Epoll,
     IOUring,
-    Async,
 }
 
 fn main() {
@@ -74,6 +78,9 @@ fn main() {
     std::thread::spawn(move || match args.kind {
         Kind::ThreadPool => {
             threadpool::run(addr, args.tp_size);
+        }
+        Kind::Async => {
+            asynchronous::run(addr, args.tokio_n_threads);
         }
         Kind::Epoll => {
             epoll::run(
@@ -90,9 +97,6 @@ fn main() {
                 args.io_uring_capacity,
                 args.io_uring_batch_size,
             );
-        }
-        Kind::Async => {
-            todo!("not implemented")
         }
     });
 
